@@ -1,0 +1,22 @@
+[project]
+name = "claude-dj"
+version = "0.1.0"
+description = "A local Claude Code DJ companion for Spotify."
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = []
+
+[project.scripts]
+claude-dj = "claude_dj.cli:main"
+
+[dependency-groups]
+dev = [
+  "pytest>=8.4.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
