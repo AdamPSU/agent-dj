@@ -9,6 +9,12 @@ import urllib.request
 import pytest
 
 from claude_dj.daemon import create_server, write_runtime_file
+from claude_dj.indexing import (
+    IndexSummary,
+    SpotifyIndexingAccessDenied,
+    SpotifyIndexingAuthRequired,
+)
+from claude_dj.storage.db import CatalogStatus
 
 
 def start_test_server():
@@ -80,6 +86,139 @@ def test_session_start_claims_active_session() -> None:
         assert response["message"] == "Claude DJ session attached."
         assert response["catalog"]["needs_onboarding"] is True
         assert response["onboarding"]["index_all_playlists"] is True
+    finally:
+        stop_test_server(server, thread)
+
+
+def test_session_start_indexes_spotify_catalog_when_empty() -> None:
+    calls = []
+
+    def fake_indexer() -> IndexSummary:
+        calls.append(True)
+        return IndexSummary(
+            playlist_count=2,
+            track_count=3,
+            skipped_track_count=1,
+            catalog_status=CatalogStatus(source_count=2, track_count=3, embedding_count=0),
+        )
+
+    server = create_server(
+        catalog_status=CatalogStatus(source_count=0, track_count=0, embedding_count=0),
+        spotify_indexer=fake_indexer,
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+
+    try:
+        host, port = server.server_address
+
+        response = json_request(
+            "POST",
+            f"http://{host}:{port}/session/start",
+            {"session_id": "test-session"},
+        )
+
+        assert calls == [True]
+        assert response["catalog"]["source_count"] == 2
+        assert response["catalog"]["track_count"] == 3
+        assert response["catalog"]["needs_spotify_index"] is False
+        assert response["indexing"]["spotify"] == {
+            "ran": True,
+            "playlist_count": 2,
+            "track_count": 3,
+            "skipped_track_count": 1,
+        }
+        assert response["onboarding"]["index_all_playlists"] is False
+        assert response["onboarding"]["resolve_previews"] is True
+    finally:
+        stop_test_server(server, thread)
+
+
+def test_session_start_does_not_reindex_existing_spotify_catalog() -> None:
+    calls = []
+
+    def fake_indexer() -> IndexSummary:
+        calls.append(True)
+        raise AssertionError("should not index")
+
+    server = create_server(
+        catalog_status=CatalogStatus(source_count=1, track_count=1, embedding_count=0),
+        spotify_indexer=fake_indexer,
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+
+    try:
+        host, port = server.server_address
+
+        response = json_request(
+            "POST",
+            f"http://{host}:{port}/session/start",
+            {"session_id": "test-session"},
+        )
+
+        assert calls == []
+        assert response["indexing"]["spotify"] == {"ran": False}
+        assert response["onboarding"]["index_all_playlists"] is False
+    finally:
+        stop_test_server(server, thread)
+
+
+def test_session_start_reports_spotify_auth_needed() -> None:
+    def fake_indexer() -> IndexSummary:
+        raise SpotifyIndexingAuthRequired("Spotify login is required before playlist indexing.")
+
+    server = create_server(
+        catalog_status=CatalogStatus(source_count=0, track_count=0, embedding_count=0),
+        spotify_indexer=fake_indexer,
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+
+    try:
+        host, port = server.server_address
+
+        response = json_request(
+            "POST",
+            f"http://{host}:{port}/session/start",
+            {"session_id": "test-session"},
+        )
+
+        assert response["indexing"]["spotify"] == {
+            "ran": False,
+            "error_code": "spotify_auth_required",
+            "message": "Spotify login is required before playlist indexing.",
+        }
+        assert response["onboarding"]["index_all_playlists"] is True
+    finally:
+        stop_test_server(server, thread)
+
+
+def test_session_start_reports_spotify_access_denied() -> None:
+    def fake_indexer() -> IndexSummary:
+        raise SpotifyIndexingAccessDenied("Spotify denied playlist track access.")
+
+    server = create_server(
+        catalog_status=CatalogStatus(source_count=0, track_count=0, embedding_count=0),
+        spotify_indexer=fake_indexer,
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+
+    try:
+        host, port = server.server_address
+
+        response = json_request(
+            "POST",
+            f"http://{host}:{port}/session/start",
+            {"session_id": "test-session"},
+        )
+
+        assert response["indexing"]["spotify"] == {
+            "ran": False,
+            "error_code": "spotify_access_denied",
+            "message": "Spotify denied playlist track access.",
+        }
     finally:
         stop_test_server(server, thread)
 

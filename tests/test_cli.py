@@ -7,6 +7,8 @@ import threading
 from claude_dj import cli
 from claude_dj.config import ensure_app_dir, get_runtime_file
 from claude_dj.daemon import create_server, write_runtime_file
+from claude_dj.indexing import IndexSummary
+from claude_dj.storage.db import CatalogStatus
 
 
 def start_test_server():
@@ -71,6 +73,101 @@ def test_start_attaches_to_existing_daemon(monkeypatch, tmp_path) -> None:
         stop_test_server(server, thread)
 
 
+def test_start_prints_spotify_indexing_summary(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("CLAUDE_DJ_HOME", str(tmp_path))
+
+    def fake_indexer() -> IndexSummary:
+        return IndexSummary(
+            playlist_count=2,
+            track_count=3,
+            skipped_track_count=1,
+            catalog_status=CatalogStatus(source_count=2, track_count=3, embedding_count=0),
+        )
+
+    server = create_server(
+        catalog_status=CatalogStatus(source_count=0, track_count=0, embedding_count=0),
+        spotify_indexer=fake_indexer,
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+
+    try:
+        write_test_runtime(tmp_path, server)
+        stdout = io.StringIO()
+
+        exit_code = cli.run(["start"], stdout=stdout)
+
+        assert exit_code == 0
+        assert "Indexed 2 Spotify playlists and 3 tracks" in stdout.getvalue()
+        assert "Skipped 1 Spotify playlist item" in stdout.getvalue()
+        assert "Next: resolving Apple/iTunes previews" in stdout.getvalue()
+    finally:
+        stop_test_server(server, thread)
+
+
+def test_start_prints_spotify_auth_instruction(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("CLAUDE_DJ_HOME", str(tmp_path))
+    response = {
+        "message": "Claude DJ session attached.",
+        "catalog": {
+            "source_count": 0,
+            "track_count": 0,
+            "embedding_count": 0,
+            "needs_spotify_index": True,
+        },
+        "indexing": {
+            "spotify": {
+                "ran": False,
+                "error_code": "spotify_auth_required",
+                "message": "Spotify login is required before playlist indexing.",
+            }
+        },
+    }
+
+    monkeypatch.setattr(cli, "load_runtime_info", lambda: object())
+    monkeypatch.setattr(cli, "is_daemon_running", lambda runtime_info: True)
+    monkeypatch.setattr(cli, "post_json", lambda runtime_info, path, body, **kwargs: response)
+    stdout = io.StringIO()
+
+    exit_code = cli.run(["start"], stdout=stdout)
+
+    assert exit_code == 0
+    assert "Spotify login is required before playlist indexing." in stdout.getvalue()
+    assert "Run: uv run claude-dj spotify-login" in stdout.getvalue()
+
+
+def test_start_prints_spotify_access_denied(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("CLAUDE_DJ_HOME", str(tmp_path))
+    response = {
+        "message": "Claude DJ session attached.",
+        "catalog": {
+            "source_count": 0,
+            "track_count": 0,
+            "embedding_count": 0,
+            "needs_spotify_index": True,
+        },
+        "indexing": {
+            "spotify": {
+                "ran": False,
+                "error_code": "spotify_access_denied",
+                "message": "Spotify denied playlist track access.",
+            }
+        },
+    }
+
+    monkeypatch.setattr(cli, "load_runtime_info", lambda: object())
+    monkeypatch.setattr(cli, "is_daemon_running", lambda runtime_info: True)
+    monkeypatch.setattr(cli, "post_json", lambda runtime_info, path, body, **kwargs: response)
+    stdout = io.StringIO()
+
+    exit_code = cli.run(["start"], stdout=stdout)
+
+    assert exit_code == 0
+    assert "Spotify denied playlist track access." in stdout.getvalue()
+    assert "Run: uv run claude-dj spotify-login" not in stdout.getvalue()
+    assert "Indexing all Spotify playlists is needed" not in stdout.getvalue()
+
+
 def test_start_spawns_daemon_when_none_is_running(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("CLAUDE_DJ_HOME", str(tmp_path))
     server, thread = start_test_server()
@@ -91,6 +188,29 @@ def test_start_spawns_daemon_when_none_is_running(monkeypatch, tmp_path) -> None
         assert "Claude DJ session attached" in stdout.getvalue()
     finally:
         stop_test_server(server, thread)
+
+
+def test_start_allows_long_running_session_start(monkeypatch) -> None:
+    calls = []
+    response = {
+        "message": "Claude DJ session attached.",
+        "catalog": {"needs_spotify_index": False},
+        "indexing": {"spotify": {"ran": False}},
+    }
+
+    def fake_post_json(runtime_info, path, body, timeout_seconds=2):
+        calls.append(timeout_seconds)
+        return response
+
+    monkeypatch.setattr(cli, "load_runtime_info", lambda: object())
+    monkeypatch.setattr(cli, "is_daemon_running", lambda runtime_info: True)
+    monkeypatch.setattr(cli, "post_json", fake_post_json)
+    stdout = io.StringIO()
+
+    exit_code = cli.run(["start"], stdout=stdout)
+
+    assert exit_code == 0
+    assert calls == [90]
 
 
 def test_quit_stops_running_daemon(monkeypatch, tmp_path) -> None:

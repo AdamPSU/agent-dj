@@ -20,18 +20,44 @@ class CatalogStatus:
     source_count: int
     track_count: int
     embedding_count: int
+    preview_match_count: int = 0
+
+    @property
+    def needs_spotify_index(self) -> bool:
+        """Return whether Spotify playlist metadata still needs indexing."""
+        return self.source_count == 0 or self.track_count == 0
+
+    @property
+    def needs_preview_resolution(self) -> bool:
+        """Return whether indexed tracks still need Apple/iTunes preview matching."""
+        return self.track_count > 0 and self.preview_match_count == 0 and self.embedding_count == 0
+
+    @property
+    def needs_embeddings(self) -> bool:
+        """Return whether indexed tracks still need local audio embeddings."""
+        return self.track_count > 0 and self.embedding_count == 0
+
+    @property
+    def ready_for_audio_similarity(self) -> bool:
+        """Return whether the local catalog can support embedding similarity."""
+        return self.embedding_count > 0
 
     @property
     def needs_onboarding(self) -> bool:
-        """Return whether the user's Spotify playlists still need indexing."""
-        return self.source_count == 0 or self.track_count == 0 or self.embedding_count == 0
+        """Return whether any catalog-building phase still needs work."""
+        return self.needs_spotify_index or self.needs_preview_resolution or self.needs_embeddings
 
     def to_json(self) -> dict[str, int | bool]:
         """Serialize catalog status for daemon responses."""
         return {
             "source_count": self.source_count,
             "track_count": self.track_count,
+            "preview_match_count": self.preview_match_count,
             "embedding_count": self.embedding_count,
+            "needs_spotify_index": self.needs_spotify_index,
+            "needs_preview_resolution": self.needs_preview_resolution,
+            "needs_embeddings": self.needs_embeddings,
+            "ready_for_audio_similarity": self.ready_for_audio_similarity,
             "needs_onboarding": self.needs_onboarding,
         }
 
@@ -127,7 +153,109 @@ def get_catalog_status(db: sqlite3.Connection) -> CatalogStatus:
     return CatalogStatus(
         source_count=_count(db, "sources"),
         track_count=_count(db, "tracks"),
+        preview_match_count=_count(db, "preview_matches"),
         embedding_count=_count(db, "track_embeddings"),
+    )
+
+
+def upsert_source(
+    db: sqlite3.Connection,
+    *,
+    source_type: str,
+    source_id: str,
+    name: str,
+    description: str | None,
+) -> int:
+    """Insert or update a catalog source and return its row id."""
+    db.execute(
+        """
+        INSERT INTO sources (source_type, source_id, name, description)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(source_type, source_id) DO UPDATE SET
+          name = excluded.name,
+          description = excluded.description,
+          updated_at = CURRENT_TIMESTAMP
+        """,
+        (source_type, source_id, name, description),
+    )
+    row = db.execute(
+        "SELECT id FROM sources WHERE source_type = ? AND source_id = ?",
+        (source_type, source_id),
+    ).fetchone()
+    return int(row["id"])
+
+
+def upsert_track(
+    db: sqlite3.Connection,
+    *,
+    spotify_track_id: str,
+    spotify_uri: str,
+    isrc: str | None,
+    title: str,
+    artist_name: str,
+    album_name: str | None,
+    duration_ms: int | None,
+    explicit: bool,
+    popularity: int | None,
+) -> int:
+    """Insert or update a Spotify track and return its row id."""
+    db.execute(
+        """
+        INSERT INTO tracks (
+          spotify_track_id,
+          spotify_uri,
+          isrc,
+          title,
+          artist_name,
+          album_name,
+          duration_ms,
+          explicit,
+          popularity
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(spotify_track_id) DO UPDATE SET
+          spotify_uri = excluded.spotify_uri,
+          isrc = excluded.isrc,
+          title = excluded.title,
+          artist_name = excluded.artist_name,
+          album_name = excluded.album_name,
+          duration_ms = excluded.duration_ms,
+          explicit = excluded.explicit,
+          popularity = excluded.popularity,
+          updated_at = CURRENT_TIMESTAMP
+        """,
+        (
+            spotify_track_id,
+            spotify_uri,
+            isrc,
+            title,
+            artist_name,
+            album_name,
+            duration_ms,
+            int(explicit),
+            popularity,
+        ),
+    )
+    row = db.execute(
+        "SELECT id FROM tracks WHERE spotify_track_id = ?",
+        (spotify_track_id,),
+    ).fetchone()
+    return int(row["id"])
+
+
+def replace_source_tracks(
+    db: sqlite3.Connection,
+    source_id: int,
+    memberships: list[tuple[int, int, str | None]],
+) -> None:
+    """Replace track memberships for a source with the latest playlist ordering."""
+    db.execute("DELETE FROM source_tracks WHERE source_id = ?", (source_id,))
+    db.executemany(
+        """
+        INSERT OR REPLACE INTO source_tracks (source_id, track_id, position, added_at)
+        VALUES (?, ?, ?, ?)
+        """,
+        [(source_id, track_id, position, added_at) for track_id, position, added_at in memberships],
     )
 
 

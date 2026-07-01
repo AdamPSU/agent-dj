@@ -18,7 +18,8 @@ from claude_dj.config import ensure_app_dir, get_runtime_file, get_spotify_confi
 from claude_dj.models import RuntimeInfo
 
 
-STARTUP_TIMEOUT_SECONDS = 5.0
+STARTUP_TIMEOUT_SECONDS = 2.0
+SESSION_START_TIMEOUT_SECONDS = 90
 
 
 def main() -> int:
@@ -50,12 +51,57 @@ def start(stdout: TextIO, stderr: TextIO) -> int:
         spawn_daemon()
         runtime_info = wait_for_daemon()
 
-    response = post_json(runtime_info, "/session/start", {"session_id": "local-cli"})
+    response = post_json(
+        runtime_info,
+        "/session/start",
+        {"session_id": "local-cli"},
+        timeout_seconds=SESSION_START_TIMEOUT_SECONDS,
+    )
     stdout.write(f"{response['message']}\n")
-    catalog = response.get("catalog", {})
-    if isinstance(catalog, dict) and catalog.get("needs_onboarding") is True:
-        stdout.write("Indexing all Spotify playlists is needed before DJ mode is ready.\n")
+    write_start_details(response, stdout)
     return 0
+
+
+def write_start_details(response: dict[str, object], stdout: TextIO) -> None:
+    """Print startup catalog/indexing details returned by the daemon."""
+    spotify_indexing = _spotify_indexing(response)
+    error_code = spotify_indexing.get("error_code")
+    if error_code in {"spotify_auth_required", "spotify_access_denied"}:
+        message = spotify_indexing.get("message")
+        if isinstance(message, str):
+            stdout.write(f"{message}\n")
+        if error_code == "spotify_auth_required":
+            stdout.write("Run: uv run claude-dj spotify-login\n")
+        return
+
+    if spotify_indexing.get("ran") is True:
+        playlist_count = int(spotify_indexing.get("playlist_count") or 0)
+        track_count = int(spotify_indexing.get("track_count") or 0)
+        skipped_track_count = int(spotify_indexing.get("skipped_track_count") or 0)
+        stdout.write(
+            f"Indexed {playlist_count} Spotify playlists and {track_count} tracks.\n"
+        )
+        if skipped_track_count:
+            suffix = "item" if skipped_track_count == 1 else "items"
+            stdout.write(f"Skipped {skipped_track_count} Spotify playlist {suffix}.\n")
+
+    catalog = response.get("catalog", {})
+    if not isinstance(catalog, dict):
+        return
+    if catalog.get("needs_spotify_index") is True:
+        stdout.write("Indexing all Spotify playlists is needed before DJ mode is ready.\n")
+    elif catalog.get("needs_preview_resolution") is True:
+        stdout.write("Next: resolving Apple/iTunes previews for audio similarity.\n")
+    elif catalog.get("needs_embeddings") is True:
+        stdout.write("Next: generating local audio embeddings.\n")
+
+
+def _spotify_indexing(response: dict[str, object]) -> dict[str, object]:
+    indexing = response.get("indexing")
+    if not isinstance(indexing, dict):
+        return {}
+    spotify = indexing.get("spotify")
+    return spotify if isinstance(spotify, dict) else {}
 
 
 def status(stdout: TextIO) -> int:
@@ -140,7 +186,12 @@ def get_json(runtime_info: RuntimeInfo, path: str) -> dict[str, object]:
         return json.loads(response.read().decode("utf-8"))
 
 
-def post_json(runtime_info: RuntimeInfo, path: str, body: dict[str, object]) -> dict[str, object]:
+def post_json(
+    runtime_info: RuntimeInfo,
+    path: str,
+    body: dict[str, object],
+    timeout_seconds: int = 2,
+) -> dict[str, object]:
     """Send a JSON POST request to the local daemon."""
     request = urllib.request.Request(
         f"{runtime_info.base_url}{path}",
@@ -148,7 +199,7 @@ def post_json(runtime_info: RuntimeInfo, path: str, body: dict[str, object]) -> 
         headers={"Content-Type": "application/json"},
         method="POST",
     )
-    with urllib.request.urlopen(request, timeout=2) as response:
+    with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
         return json.loads(response.read().decode("utf-8"))
 
 

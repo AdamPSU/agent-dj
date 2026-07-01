@@ -5,11 +5,18 @@ This module will own session lifecycle, command handling, and the DJ loop.
 
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from collections.abc import Callable
 import json
 import os
 import threading
 
-from claude_dj.config import ensure_app_dir, get_database_file, get_runtime_file
+from claude_dj.config import ensure_app_dir, get_database_file, get_runtime_file, get_spotify_token_file
+from claude_dj.indexing import (
+    IndexSummary,
+    SpotifyIndexingAccessDenied,
+    SpotifyIndexingAuthRequired,
+    index_spotify_playlists,
+)
 from claude_dj.models import RuntimeInfo
 from claude_dj.storage.db import CatalogStatus, connect, get_catalog_status, initialize_schema
 
@@ -17,15 +24,25 @@ from claude_dj.storage.db import CatalogStatus, connect, get_catalog_status, ini
 LOOPBACK_HOST = "127.0.0.1"
 
 
+SpotifyIndexer = Callable[[], IndexSummary]
+
+
 class DaemonState:
     """In-memory daemon state for the local control server."""
 
-    def __init__(self, host: str, port: int, catalog_status: CatalogStatus) -> None:
+    def __init__(
+        self,
+        host: str,
+        port: int,
+        catalog_status: CatalogStatus,
+        spotify_indexer: SpotifyIndexer | None,
+    ) -> None:
         self.host = host
         self.port = port
         self.pid = os.getpid()
         self.active_session_id: str | None = None
         self.catalog_status = catalog_status
+        self.spotify_indexer = spotify_indexer
 
 
 class ClaudeDJHTTPServer(ThreadingHTTPServer):
@@ -84,6 +101,7 @@ class DaemonRequestHandler(BaseHTTPRequestHandler):
     def _handle_session_start(self, body: dict[str, object]) -> None:
         session_id = str(body.get("session_id") or "local-cli")
         self.server.state.active_session_id = session_id
+        indexing = self._maybe_index_spotify_catalog()
         self._send_json(
             200,
             {
@@ -91,11 +109,38 @@ class DaemonRequestHandler(BaseHTTPRequestHandler):
                 "message": "Claude DJ session attached.",
                 "active_session_id": self.server.state.active_session_id,
                 "catalog": self.server.state.catalog_status.to_json(),
+                "indexing": {"spotify": indexing},
                 "onboarding": {
-                    "index_all_playlists": self.server.state.catalog_status.needs_onboarding
+                    "index_all_playlists": self.server.state.catalog_status.needs_spotify_index,
+                    "resolve_previews": self.server.state.catalog_status.needs_preview_resolution,
+                    "embed_tracks": self.server.state.catalog_status.needs_embeddings,
                 },
             },
         )
+
+    def _maybe_index_spotify_catalog(self) -> dict[str, object]:
+        if not self.server.state.catalog_status.needs_spotify_index:
+            return {"ran": False}
+        if self.server.state.spotify_indexer is None:
+            return {"ran": False}
+
+        try:
+            summary = self.server.state.spotify_indexer()
+        except SpotifyIndexingAuthRequired as exc:
+            return {
+                "ran": False,
+                "error_code": "spotify_auth_required",
+                "message": str(exc),
+            }
+        except SpotifyIndexingAccessDenied as exc:
+            return {
+                "ran": False,
+                "error_code": "spotify_access_denied",
+                "message": str(exc),
+            }
+
+        self.server.state.catalog_status = summary.catalog_status
+        return summary.to_json()
 
     def _read_json_body(self) -> dict[str, object] | None:
         length = int(self.headers.get("Content-Length") or "0")
@@ -120,6 +165,7 @@ def create_server(
     host: str = LOOPBACK_HOST,
     port: int = 0,
     catalog_status: CatalogStatus | None = None,
+    spotify_indexer: SpotifyIndexer | None = None,
 ) -> ClaudeDJHTTPServer:
     """Create a loopback-only local HTTP daemon server."""
     server = ClaudeDJHTTPServer((host, port), DaemonRequestHandler)
@@ -128,6 +174,7 @@ def create_server(
         host=bound_host,
         port=bound_port,
         catalog_status=catalog_status or CatalogStatus(0, 0, 0),
+        spotify_indexer=spotify_indexer,
     )
     return server
 
@@ -148,7 +195,18 @@ def run_daemon() -> int:
     catalog_status = get_catalog_status(db)
     db.close()
 
-    server = create_server(catalog_status=catalog_status)
+    def spotify_indexer() -> IndexSummary:
+        index_db = connect(database_file)
+        try:
+            initialize_schema(index_db)
+            return index_spotify_playlists(
+                index_db,
+                token_file=get_spotify_token_file(app_dir),
+            )
+        finally:
+            index_db.close()
+
+    server = create_server(catalog_status=catalog_status, spotify_indexer=spotify_indexer)
     host, port = server.server_address
     write_runtime_file(runtime_file, pid=os.getpid(), host=host, port=port)
 
