@@ -105,3 +105,22 @@ def test_quit_stops_running_daemon(monkeypatch, tmp_path) -> None:
     assert exit_code == 0
     assert "Claude DJ daemon stopped" in stdout.getvalue()
     assert not thread.is_alive()
+
+
+def test_spotify_login_runs_auth_flow(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("CLAUDE_DJ_HOME", str(tmp_path))
+    monkeypatch.setenv("SPOTIFY_CLIENT_ID", "client-id")
+    calls = []
+
+    def fake_perform_spotify_login(config, token_file):
+        calls.append((config, token_file))
+
+    monkeypatch.setattr(cli, "perform_spotify_login", fake_perform_spotify_login)
+    stdout = io.StringIO()
+
+    exit_code = cli.run(["spotify-login"], stdout=stdout)
+
+    assert exit_code == 0
+    assert calls[0][0].client_id == "client-id"
+    assert calls[0][1] == tmp_path / "spotify-token.json"
+    assert "Spotify login complete" in stdout.getvalue()

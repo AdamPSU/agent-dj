@@ -13,7 +13,8 @@ import time
 import urllib.error
 import urllib.request
 
-from claude_dj.config import ensure_app_dir, get_runtime_file
+from claude_dj.adapters.spotify import perform_spotify_login
+from claude_dj.config import ensure_app_dir, get_runtime_file, get_spotify_config, get_spotify_token_file
 from claude_dj.models import RuntimeInfo
 
 
@@ -28,7 +29,7 @@ def main() -> int:
 def run(args: list[str], stdout: TextIO = sys.stdout, stderr: TextIO = sys.stderr) -> int:
     """Run a Claude DJ CLI command."""
     parser = argparse.ArgumentParser(prog="claude-dj")
-    parser.add_argument("command", choices=["start", "status", "quit"])
+    parser.add_argument("command", choices=["start", "status", "quit", "spotify-login"])
     namespace = parser.parse_args(args)
 
     if namespace.command == "start":
@@ -37,6 +38,8 @@ def run(args: list[str], stdout: TextIO = sys.stdout, stderr: TextIO = sys.stder
         return status(stdout=stdout)
     if namespace.command == "quit":
         return quit_daemon(stdout=stdout)
+    if namespace.command == "spotify-login":
+        return spotify_login(stdout=stdout)
     return 2
 
 
@@ -75,6 +78,16 @@ def quit_daemon(stdout: TextIO) -> int:
 
     response = post_json(runtime_info, "/daemon/quit", {})
     stdout.write(f"{response['message']}\n")
+    return 0
+
+
+def spotify_login(stdout: TextIO) -> int:
+    """Run Spotify browser login and save the local token cache."""
+    perform_spotify_login(
+        config=get_spotify_config(),
+        token_file=get_spotify_token_file(),
+    )
+    stdout.write("Spotify login complete.\n")
     return 0
 
 
