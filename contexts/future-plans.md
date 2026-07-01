@@ -21,7 +21,7 @@ Open questions:
 
 ## Audio embeddings and vector search
 
-Do not make audio embeddings mandatory for MVP. The original idea was to sync a user's Spotify or Apple Music playlists, resolve tracks by ISRC, fetch 30-second previews from another provider, run MuQ-MuLan embeddings, and build a local similarity index. That flow is technically plausible but legally blocked or unclear across normal consumer music APIs.
+Do not make audio embeddings mandatory for MVP. The current v1 prototype direction is to sync a user's Spotify playlists, resolve tracks by ISRC, fetch 30-second Apple/iTunes previews when available, run MuQ-MuLan embeddings, and build a local similarity index. This is technically plausible for a local non-commercial prototype, but commercial/product use remains legally unclear across normal consumer music APIs.
 
 Safer future architecture:
 
@@ -32,7 +32,7 @@ Local DB = metadata + permitted audio embeddings + user feedback
 DJ controller = uses provider APIs, feedback, optional mood, and embeddings when available
 ```
 
-The recommendation engine should not depend on embedding the user's full Spotify library. A local vector DB can remain a future design option, but it should only be populated from audio sources with explicit rights.
+The recommendation engine should not depend on embedding the user's full Spotify library. A local vector DB can be used for v1 prototype embeddings from matched Apple/iTunes previews, but any broader product path should only populate embeddings from audio sources with explicit rights.
 
 ## Licensing research summary
 
@@ -58,7 +58,7 @@ Apple Music API supports catalog data, library data, recommendations, playback h
 
 URL: https://developer.apple.com/documentation/applemusicapi/preview
 
-Apple exposes preview `url` and `hlsUrl`. This proves preview URLs exist, but does not prove we can download, analyze, or store embeddings from them.
+Apple exposes preview `url` and `hlsUrl`. For the v1 local non-commercial prototype, Apple/iTunes preview URLs are the preferred practical audio source for MuQ-MuLan embeddings because they can be resolved from Spotify tracks through ISRC matching and are technically downloadable. This does not prove Apple grants commercial rights to analyze previews or store derived embeddings.
 
 ### MusicKit
 
@@ -76,7 +76,7 @@ MusicKit Content cannot be downloaded, uploaded, or modified unless Apple permit
 
 URL: https://performance-partners.apple.com/search-api
 
-The iTunes Search API exposes `previewUrl`, a 30-second preview file. Terms describe previews as promotional content, streamed only, not downloaded, saved, or cached. Not safe for MuQ-MuLan embeddings.
+The iTunes Search API exposes `previewUrl`, a 30-second preview file. V1 can use this as the prototype embedding source after resolving Spotify tracks by ISRC. Treat this as a local non-commercial prototype assumption, not a clean commercial licensing path.
 
 ### Deezer API Terms
 

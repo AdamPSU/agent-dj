@@ -65,6 +65,8 @@ The MVP also does not try to make multiple Claude Code sessions control music at
 
 The first recommendation algorithm should be simple and based on sound embeddings. It is not an agentic loop.
 
+V1 uses MuQ-MuLan audio embeddings. Spotify remains the playback source of truth, but Spotify audio must not be used as the embedding source. Instead, Claude DJ resolves Spotify tracks to ISRCs, uses Apple/iTunes preview URLs as the audio source for local non-commercial prototype embeddings, and stores derived embeddings for matched tracks.
+
 V1 proceeds as follows:
 
 1. Pick a genre and stick to it for the current set.
@@ -72,3 +74,15 @@ V1 proceeds as follows:
 3. Play 3-5 songs from the current genre.
 4. After that set is done, switch to a different genre.
 5. If DJ voice is enabled, which it is by default, Claude narrates the genre transition like a DJ. The DJ voice is powered by Haiku for narration text and ElevenLabs for speech.
+
+The embedding pipeline is:
+
+1. Read Spotify playlist or playback metadata.
+2. Extract each Spotify track's ISRC.
+3. Resolve the ISRC through Apple/iTunes metadata.
+4. Fetch the Apple/iTunes preview URL for matched tracks.
+5. Generate a MuQ-MuLan embedding from the preview audio.
+6. Store the embedding and matching metadata locally.
+7. Use nearest-neighbor search over local embeddings to choose similar songs.
+
+Tracks that cannot be matched to Apple/iTunes preview audio should be skipped for embedding. Claude DJ should still be able to play them through Spotify, but they should not participate in embedding-based similarity until a valid preview source is found.
