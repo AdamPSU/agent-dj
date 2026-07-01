@@ -18,32 +18,35 @@ This gives `/dj stop`, `/dj detach`, and `/dj quit` different meanings. `/dj sto
 
 The Claude Code command layer receives `/dj` commands and talks to the local daemon. It should not own long-running state or run DJ logic directly.
 
-The local daemon owns the DJ session. It manages Spotify authentication, Spotify playback actions, local session control, user overrides, and decision history.
+The local daemon owns the DJ session. It manages Spotify authentication, Spotify playback actions, local session control, user overrides, recommendation state, and decision history.
 
 An optional future mood analyzer can run locally. It would convert camera or audio input into mood and energy signals that the daemon can use, but baseline DJ mode should not require it.
 
 The Spotify adapter is the only MVP music adapter. It should hide Spotify API details behind music actions such as reading playback state, searching, queueing, skipping, starting playback, and selecting a device.
 
-The DJ controller is the agentic decision layer. It receives structured state from the daemon and chooses what music action, if any, should happen next.
+The v1 DJ controller is a deterministic recommendation layer. It uses playlist metadata, user commands, and local audio embeddings to choose similar songs and record explainable decisions.
+
+The audio embedding pipeline resolves Spotify tracks by ISRC, fetches matched Apple/iTunes preview audio for local non-commercial prototype use, generates MuQ-MuLan embeddings, and stores derived vectors locally. Spotify remains the playback source of truth, but Spotify audio must not be used as the embedding source.
 
 The session store records the active session, attached Claude Code clients, recent Spotify actions, user overrides, and explanation history.
 
-## Agentic decision loop
+## V1 recommendation loop
 
-Claude DJ should not be a fixed rule table. The daemon should run a small agentic controller that observes state, decides whether to intervene, chooses a Spotify action, records the decision, and can explain the choice later.
+Claude DJ v1 should not use an agentic music-selection loop. The daemon should run a simple embedding-based controller that observes state, chooses similar music from the local vector index, records the decision, and can explain the choice later.
 
 The loop can be described as:
 
 ```text
-observe Spotify playback, user commands, and session state
-interpret the current music fit
-decide whether a music action is needed
-choose the next Spotify action, if any
+observe Spotify playback, user commands, local embeddings, and session state
+choose or keep the current genre direction
+pick a seed song for that genre
+choose nearby songs in embedding space
+queue or play the next Spotify track, if any
 record the decision and reason
 explain the decision if asked
 ```
 
-The first version can keep this controller simple. It only needs enough judgment to choose between staying similar, changing direction, skipping, queueing, or asking the user.
+The first version should keep this controller simple. It should play short genre-coherent sets, choose songs near the current seed song in embedding space, and switch genres after a set is done. Any future agentic controller should be designed separately after the local daemon, Spotify playback, and embedding pipeline work.
 
 ## Privacy and safety
 
