@@ -8,7 +8,7 @@ import urllib.request
 
 import pytest
 
-from claude_dj.daemon import PREVIEW_RESOLUTION_BATCH_SIZE, create_server, write_runtime_file
+from claude_dj.daemon import MIN_READY_TRACKS, PREVIEW_RESOLUTION_BATCH_SIZE, create_server, write_runtime_file
 from claude_dj.audio.embeddings import EmbeddingGenerationSummary
 from claude_dj.audio.previews import PreviewResolutionSummary
 from claude_dj.indexing import (
@@ -21,6 +21,10 @@ from claude_dj.storage.db import CatalogStatus
 
 def test_preview_resolution_batch_fits_one_deezer_rate_limit_window() -> None:
     assert PREVIEW_RESOLUTION_BATCH_SIZE == 50
+
+
+def test_min_ready_tracks_for_dj_start_is_30() -> None:
+    assert MIN_READY_TRACKS == 30
 
 
 def start_test_server():
@@ -87,11 +91,186 @@ def test_session_start_claims_active_session() -> None:
             {"session_id": "test-session"},
         )
 
-        assert response["ok"] is True
+        assert response["ok"] is False
         assert response["active_session_id"] == "test-session"
         assert response["message"] == "Claude DJ session attached."
+        assert response["error_code"] == "insufficient_ready_tracks"
         assert response["catalog"]["needs_onboarding"] is True
         assert response["onboarding"]["index_all_playlists"] is True
+    finally:
+        stop_test_server(server, thread)
+
+
+def test_sync_start_runs_one_background_pipeline_at_a_time() -> None:
+    calls = []
+    release = threading.Event()
+    started = threading.Event()
+
+    def fake_indexer() -> IndexSummary:
+        calls.append(True)
+        started.set()
+        release.wait(timeout=2)
+        return IndexSummary(
+            playlist_count=1,
+            track_count=MIN_READY_TRACKS,
+            skipped_track_count=0,
+            catalog_status=CatalogStatus(
+                source_count=1,
+                track_count=MIN_READY_TRACKS,
+                embedding_count=MIN_READY_TRACKS,
+                ready_track_count=MIN_READY_TRACKS,
+            ),
+        )
+
+    server = create_server(
+        catalog_status=CatalogStatus(source_count=1, track_count=0, embedding_count=0),
+        spotify_indexer=fake_indexer,
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+
+    try:
+        host, port = server.server_address
+
+        first = json_request("POST", f"http://{host}:{port}/sync/start", {})
+        assert started.wait(timeout=2)
+        second = json_request("POST", f"http://{host}:{port}/sync/start", {})
+
+        assert first["sync"]["status"] == "running"
+        assert second["sync"]["status"] == "running"
+        assert calls == [True]
+    finally:
+        release.set()
+        stop_test_server(server, thread)
+
+
+def test_session_start_with_enough_ready_tracks_starts_sync_without_waiting() -> None:
+    calls = []
+    release = threading.Event()
+    started = threading.Event()
+
+    def fake_indexer() -> IndexSummary:
+        calls.append(True)
+        started.set()
+        release.wait(timeout=2)
+        return IndexSummary(
+            playlist_count=1,
+            track_count=MIN_READY_TRACKS,
+            skipped_track_count=0,
+            catalog_status=CatalogStatus(
+                source_count=1,
+                track_count=MIN_READY_TRACKS,
+                embedding_count=MIN_READY_TRACKS,
+                ready_track_count=MIN_READY_TRACKS,
+            ),
+        )
+
+    server = create_server(
+        catalog_status=CatalogStatus(
+            source_count=1,
+            track_count=MIN_READY_TRACKS,
+            embedding_count=MIN_READY_TRACKS,
+            ready_track_count=MIN_READY_TRACKS,
+        ),
+        spotify_indexer=fake_indexer,
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+
+    try:
+        host, port = server.server_address
+
+        response = json_request(
+            "POST",
+            f"http://{host}:{port}/session/start",
+            {"session_id": "test-session"},
+        )
+
+        assert response["ok"] is True
+        assert response["catalog"]["ready_track_count"] == MIN_READY_TRACKS
+        assert response["sync"]["status"] == "running"
+        assert started.wait(timeout=2)
+        assert calls == [True]
+    finally:
+        release.set()
+        stop_test_server(server, thread)
+
+
+def test_session_start_waits_until_sync_reaches_minimum_ready_tracks() -> None:
+    calls = []
+
+    def fake_indexer() -> IndexSummary:
+        calls.append(True)
+        return IndexSummary(
+            playlist_count=1,
+            track_count=MIN_READY_TRACKS,
+            skipped_track_count=0,
+            catalog_status=CatalogStatus(
+                source_count=1,
+                track_count=MIN_READY_TRACKS,
+                embedding_count=MIN_READY_TRACKS,
+                ready_track_count=MIN_READY_TRACKS,
+            ),
+        )
+
+    server = create_server(
+        catalog_status=CatalogStatus(
+            source_count=1,
+            track_count=MIN_READY_TRACKS,
+            embedding_count=0,
+            ready_track_count=0,
+        ),
+        spotify_indexer=fake_indexer,
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+
+    try:
+        host, port = server.server_address
+
+        response = json_request(
+            "POST",
+            f"http://{host}:{port}/session/start",
+            {"session_id": "test-session"},
+        )
+
+        assert calls == [True]
+        assert response["ok"] is True
+        assert response["catalog"]["ready_track_count"] == MIN_READY_TRACKS
+        assert response["sync"]["status"] in {"running", "completed"}
+    finally:
+        stop_test_server(server, thread)
+
+
+def test_session_start_reports_insufficient_library_when_sync_cannot_reach_minimum() -> None:
+    def fake_indexer() -> IndexSummary:
+        return IndexSummary(
+            playlist_count=1,
+            track_count=10,
+            skipped_track_count=0,
+            catalog_status=CatalogStatus(source_count=1, track_count=10, embedding_count=0),
+        )
+
+    server = create_server(
+        catalog_status=CatalogStatus(source_count=0, track_count=0, embedding_count=0),
+        spotify_indexer=fake_indexer,
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+
+    try:
+        host, port = server.server_address
+
+        response = json_request(
+            "POST",
+            f"http://{host}:{port}/session/start",
+            {"session_id": "test-session"},
+        )
+
+        assert response["ok"] is False
+        assert response["error_code"] == "insufficient_ready_tracks"
+        assert response["minimum_ready_tracks"] == MIN_READY_TRACKS
+        assert response["catalog"]["track_count"] == 10
     finally:
         stop_test_server(server, thread)
 
@@ -275,12 +454,22 @@ def test_session_start_generates_embeddings_after_preview_resolution() -> None:
         stop_test_server(server, thread)
 
 
-def test_session_start_does_not_reindex_existing_spotify_catalog() -> None:
+def test_session_start_refreshes_existing_spotify_catalog() -> None:
     calls = []
 
     def fake_indexer() -> IndexSummary:
         calls.append(True)
-        raise AssertionError("should not index")
+        return IndexSummary(
+            playlist_count=1,
+            track_count=MIN_READY_TRACKS,
+            skipped_track_count=0,
+            catalog_status=CatalogStatus(
+                source_count=1,
+                track_count=MIN_READY_TRACKS,
+                embedding_count=MIN_READY_TRACKS,
+                ready_track_count=MIN_READY_TRACKS,
+            ),
+        )
 
     server = create_server(
         catalog_status=CatalogStatus(source_count=1, track_count=1, embedding_count=0),
@@ -298,8 +487,8 @@ def test_session_start_does_not_reindex_existing_spotify_catalog() -> None:
             {"session_id": "test-session"},
         )
 
-        assert calls == []
-        assert response["indexing"]["spotify"] == {"ran": False}
+        assert calls == [True]
+        assert response["catalog"]["ready_track_count"] == MIN_READY_TRACKS
         assert response["onboarding"]["index_all_playlists"] is False
     finally:
         stop_test_server(server, thread)

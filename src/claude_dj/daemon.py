@@ -28,12 +28,14 @@ from claude_dj.storage.db import CatalogStatus, connect, get_catalog_status, ini
 
 
 LOOPBACK_HOST = "127.0.0.1"
+MIN_READY_TRACKS = 30
 PREVIEW_RESOLUTION_BATCH_SIZE = DEEZER_RATE_LIMIT_REQUESTS
 
 
 SpotifyIndexer = Callable[[], IndexSummary]
 PreviewResolver = Callable[[], PreviewResolutionSummary]
 EmbeddingGenerator = Callable[[], EmbeddingGenerationSummary]
+CatalogStepRunner = Callable[[], PreviewResolutionSummary | EmbeddingGenerationSummary]
 
 
 class DaemonState:
@@ -56,6 +58,11 @@ class DaemonState:
         self.spotify_indexer = spotify_indexer
         self.preview_resolver = preview_resolver
         self.embedding_generator = embedding_generator
+        self.sync_status = "idle"
+        self.sync_error: str | None = None
+        self.sync_indexing: dict[str, dict[str, object]] = _empty_indexing_payload()
+        self.sync_thread: threading.Thread | None = None
+        self.sync_condition = threading.Condition(threading.RLock())
 
 
 class ClaudeDJHTTPServer(ThreadingHTTPServer):
@@ -101,6 +108,10 @@ class DaemonRequestHandler(BaseHTTPRequestHandler):
             self._handle_session_start(body)
             return
 
+        if self.path == "/sync/start":
+            self._handle_sync_start()
+            return
+
         if self.path == "/daemon/quit":
             self._send_json(200, {"ok": True, "message": "Claude DJ daemon stopped."})
             threading.Thread(target=self.server.shutdown, daemon=True).start()
@@ -114,32 +125,41 @@ class DaemonRequestHandler(BaseHTTPRequestHandler):
     def _handle_session_start(self, body: dict[str, object]) -> None:
         session_id = str(body.get("session_id") or "local-cli")
         self.server.state.active_session_id = session_id
-        spotify_indexing = self._maybe_index_spotify_catalog()
-        preview_resolution = self._maybe_resolve_deezer_previews()
-        embedding_generation = self._maybe_generate_audio_embeddings()
+        self._start_sync_if_idle()
+        self._wait_for_ready_tracks_or_sync_terminal()
+        ready = self.server.state.catalog_status.ready_track_count >= MIN_READY_TRACKS
         self._send_json(
             200,
             {
-                "ok": True,
+                "ok": ready,
                 "message": "Claude DJ session attached.",
                 "active_session_id": self.server.state.active_session_id,
+                "error_code": None if ready else "insufficient_ready_tracks",
+                "minimum_ready_tracks": MIN_READY_TRACKS,
                 "catalog": self.server.state.catalog_status.to_json(),
-                "indexing": {
-                    "spotify": spotify_indexing,
-                    "previews": preview_resolution,
-                    "embeddings": embedding_generation,
-                },
+                "indexing": self.server.state.sync_indexing,
                 "onboarding": {
                     "index_all_playlists": self.server.state.catalog_status.needs_spotify_index,
                     "resolve_previews": self.server.state.catalog_status.needs_preview_resolution,
                     "embed_tracks": self.server.state.catalog_status.needs_embeddings,
                 },
+                "sync": self._sync_status_json(),
             },
         )
 
-    def _maybe_index_spotify_catalog(self) -> dict[str, object]:
-        if not self.server.state.catalog_status.needs_spotify_index:
-            return {"ran": False}
+    def _handle_sync_start(self) -> None:
+        self._start_sync_if_idle()
+        self._send_json(
+            200,
+            {
+                "ok": True,
+                "message": "Storing your songs on device.",
+                "catalog": self.server.state.catalog_status.to_json(),
+                "sync": self._sync_status_json(),
+            },
+        )
+
+    def _run_spotify_indexing(self) -> dict[str, object]:
         if self.server.state.spotify_indexer is None:
             return {"ran": False}
 
@@ -161,25 +181,85 @@ class DaemonRequestHandler(BaseHTTPRequestHandler):
         self.server.state.catalog_status = summary.catalog_status
         return summary.to_json()
 
-    def _maybe_generate_audio_embeddings(self) -> dict[str, object]:
-        if not self.server.state.catalog_status.needs_embeddings:
-            return {"ran": False}
-        if self.server.state.embedding_generator is None:
+    def _generate_audio_embeddings(self) -> dict[str, object]:
+        return self._run_catalog_step_if_needed(
+            self.server.state.catalog_status.needs_embeddings,
+            self.server.state.embedding_generator,
+        )
+
+    def _resolve_deezer_previews(self) -> dict[str, object]:
+        return self._run_catalog_step_if_needed(
+            self.server.state.catalog_status.needs_preview_resolution,
+            self.server.state.preview_resolver,
+        )
+
+    def _run_catalog_step_if_needed(
+        self,
+        needed: bool,
+        runner: CatalogStepRunner | None,
+    ) -> dict[str, object]:
+        if not needed or runner is None:
             return {"ran": False}
 
-        summary = self.server.state.embedding_generator()
+        summary = runner()
         self.server.state.catalog_status = summary.catalog_status
         return summary.to_json()
 
-    def _maybe_resolve_deezer_previews(self) -> dict[str, object]:
-        if not self.server.state.catalog_status.needs_preview_resolution:
-            return {"ran": False}
-        if self.server.state.preview_resolver is None:
-            return {"ran": False}
+    def _start_sync_if_idle(self) -> dict[str, object]:
+        with self.server.state.sync_condition:
+            if self.server.state.sync_status == "running":
+                return self._sync_status_json()
 
-        summary = self.server.state.preview_resolver()
-        self.server.state.catalog_status = summary.catalog_status
-        return summary.to_json()
+            self.server.state.sync_status = "running"
+            self.server.state.sync_error = None
+            self.server.state.sync_indexing = _empty_indexing_payload()
+            thread = threading.Thread(target=self._run_sync_pipeline, daemon=True)
+            self.server.state.sync_thread = thread
+            thread.start()
+            self.server.state.sync_condition.notify_all()
+            return self._sync_status_json()
+
+    def _run_sync_pipeline(self) -> None:
+        indexing = _empty_indexing_payload()
+        status = "completed"
+        error: str | None = None
+        try:
+            indexing["spotify"] = self._run_spotify_indexing()
+            indexing["previews"] = self._resolve_deezer_previews()
+            indexing["embeddings"] = self._generate_audio_embeddings()
+        except Exception as exc:
+            status = "failed"
+            error = str(exc)
+
+        with self.server.state.sync_condition:
+            self.server.state.sync_status = status
+            self.server.state.sync_error = error
+            self.server.state.sync_indexing = indexing
+            self.server.state.sync_condition.notify_all()
+
+    def _wait_for_ready_tracks_or_sync_terminal(self) -> None:
+        while self.server.state.catalog_status.ready_track_count < MIN_READY_TRACKS:
+            with self.server.state.sync_condition:
+                if self._cannot_reach_min_ready_tracks():
+                    return
+                if self.server.state.sync_status != "running":
+                    self._start_sync_if_idle()
+                self.server.state.sync_condition.wait(timeout=0.05)
+
+    def _cannot_reach_min_ready_tracks(self) -> bool:
+        catalog = self.server.state.catalog_status
+        potential_ready_count = (
+            catalog.ready_track_count
+            + catalog._preview_pending_count()
+            + catalog._embedding_pending_count()
+        )
+        return self.server.state.sync_status != "running" and potential_ready_count < MIN_READY_TRACKS
+
+    def _sync_status_json(self) -> dict[str, object]:
+        payload: dict[str, object] = {"status": self.server.state.sync_status}
+        if self.server.state.sync_error is not None:
+            payload["error"] = self.server.state.sync_error
+        return payload
 
     def _read_json_body(self) -> dict[str, object] | None:
         length = int(self.headers.get("Content-Length") or "0")
@@ -226,6 +306,14 @@ def write_runtime_file(runtime_file: Path, pid: int, host: str, port: int) -> No
     """Record the daemon process and dynamic port for future CLI commands."""
     runtime_info = RuntimeInfo(pid=pid, host=host, port=port)
     runtime_file.write_text(json.dumps(runtime_info.to_json()), encoding="utf-8")
+
+
+def _empty_indexing_payload() -> dict[str, dict[str, object]]:
+    return {
+        "spotify": {"ran": False},
+        "previews": {"ran": False},
+        "embeddings": {"ran": False},
+    }
 
 
 def run_daemon() -> int:

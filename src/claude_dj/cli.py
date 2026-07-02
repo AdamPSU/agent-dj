@@ -30,11 +30,13 @@ def main() -> int:
 def run(args: list[str], stdout: TextIO = sys.stdout, stderr: TextIO = sys.stderr) -> int:
     """Run a Claude DJ CLI command."""
     parser = argparse.ArgumentParser(prog="claude-dj")
-    parser.add_argument("command", choices=["start", "status", "quit", "spotify-login"])
+    parser.add_argument("command", choices=["start", "sync", "status", "quit", "spotify-login"])
     namespace = parser.parse_args(args)
 
     if namespace.command == "start":
         return start(stdout=stdout, stderr=stderr)
+    if namespace.command == "sync":
+        return sync(stdout=stdout, stderr=stderr)
     if namespace.command == "status":
         return status(stdout=stdout)
     if namespace.command == "quit":
@@ -62,6 +64,18 @@ def start(stdout: TextIO, stderr: TextIO) -> int:
     return 0
 
 
+def sync(stdout: TextIO, stderr: TextIO) -> int:
+    """Start or join local song storage in the daemon."""
+    runtime_info = load_runtime_info()
+    if runtime_info is None or not is_daemon_running(runtime_info):
+        spawn_daemon()
+        runtime_info = wait_for_daemon()
+
+    response = post_json(runtime_info, "/sync/start", {})
+    stdout.write(f"{response['message']}\n")
+    return 0
+
+
 def write_start_details(response: dict[str, object], stdout: TextIO) -> None:
     """Print startup catalog/indexing details returned by the daemon."""
     spotify_indexing = _spotify_indexing(response)
@@ -74,78 +88,20 @@ def write_start_details(response: dict[str, object], stdout: TextIO) -> None:
             stdout.write("Run: uv run claude-dj spotify-login\n")
         return
 
-    if spotify_indexing.get("ran") is True:
-        playlist_count = int(spotify_indexing.get("playlist_count") or 0)
-        track_count = int(spotify_indexing.get("track_count") or 0)
-        skipped_track_count = int(spotify_indexing.get("skipped_track_count") or 0)
-        stdout.write(
-            f"Indexed {playlist_count} Spotify playlists and {track_count} tracks.\n"
-        )
-        if skipped_track_count:
-            suffix = "item" if skipped_track_count == 1 else "items"
-            stdout.write(f"Skipped {skipped_track_count} Spotify playlist {suffix}.\n")
-
-    preview_resolution = _preview_resolution(response)
-    if preview_resolution.get("ran") is True:
-        resolved_count = int(preview_resolution.get("resolved_count") or 0)
-        matched_count = int(preview_resolution.get("matched_count") or 0)
-        no_preview_count = int(preview_resolution.get("no_preview_count") or 0)
-        not_found_count = int(preview_resolution.get("not_found_count") or 0)
-        no_isrc_count = int(preview_resolution.get("no_isrc_count") or 0)
-        failed_count = int(preview_resolution.get("failed_count") or 0)
-        if resolved_count:
-            stdout.write(
-                f"Resolved {resolved_count} Deezer preview candidates: "
-                f"{matched_count} matched, {no_preview_count} no preview, "
-                f"{not_found_count} not found, {no_isrc_count} missing ISRC, "
-                f"{failed_count} failed.\n"
-            )
-        if preview_resolution.get("error_code") == "deezer_rate_limited":
-            stdout.write("Deezer rate limit reached; preview resolution will continue later.\n")
-
-    embedding_generation = _embedding_generation(response)
-    if embedding_generation.get("ran") is True:
-        embedded_count = int(embedding_generation.get("embedded_count") or 0)
-        failed_count = int(embedding_generation.get("failed_count") or 0)
-        if embedded_count:
-            stdout.write(f"Generated {embedded_count} local MuQ-MuLan embeddings.\n")
-        if failed_count:
-            suffix = "embedding" if failed_count == 1 else "embeddings"
-            stdout.write(f"{failed_count} {suffix} failed.\n")
-
-    catalog = response.get("catalog", {})
-    if not isinstance(catalog, dict):
-        return
-    if catalog.get("needs_spotify_index") is True:
-        stdout.write("Indexing all Spotify playlists is needed before DJ mode is ready.\n")
-    elif catalog.get("needs_preview_resolution") is True:
-        stdout.write("Next: resolving Deezer previews for audio similarity.\n")
-    elif catalog.get("needs_embeddings") is True:
-        stdout.write("Next: generating local audio embeddings.\n")
+    stdout.write("Storing your songs on device.\n")
+    return
 
 
 def _spotify_indexing(response: dict[str, object]) -> dict[str, object]:
+    return _indexing_result(response, "spotify")
+
+
+def _indexing_result(response: dict[str, object], key: str) -> dict[str, object]:
     indexing = response.get("indexing")
     if not isinstance(indexing, dict):
         return {}
-    spotify = indexing.get("spotify")
-    return spotify if isinstance(spotify, dict) else {}
-
-
-def _preview_resolution(response: dict[str, object]) -> dict[str, object]:
-    indexing = response.get("indexing")
-    if not isinstance(indexing, dict):
-        return {}
-    previews = indexing.get("previews")
-    return previews if isinstance(previews, dict) else {}
-
-
-def _embedding_generation(response: dict[str, object]) -> dict[str, object]:
-    indexing = response.get("indexing")
-    if not isinstance(indexing, dict):
-        return {}
-    embeddings = indexing.get("embeddings")
-    return embeddings if isinstance(embeddings, dict) else {}
+    result = indexing.get(key)
+    return result if isinstance(result, dict) else {}
 
 
 def status(stdout: TextIO) -> int:

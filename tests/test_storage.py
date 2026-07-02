@@ -42,6 +42,67 @@ def test_initialize_schema_creates_metadata_and_vector_tables(tmp_path) -> None:
         assert "index_runs" not in tables
         assert "track_index_status" not in tables
         assert EMBEDDING_DIMENSIONS == 512
+        preview_columns = {
+            row["name"] for row in db.execute("PRAGMA table_info(preview_matches)")
+        }
+        assert "confidence" not in preview_columns
+    finally:
+        db.close()
+
+
+def test_initialize_schema_removes_legacy_preview_confidence_column(tmp_path) -> None:
+    db = connect(tmp_path / "claude-dj.sqlite3")
+
+    try:
+        db.executescript(
+            """
+            CREATE TABLE tracks (
+              id INTEGER PRIMARY KEY,
+              spotify_track_id TEXT NOT NULL UNIQUE,
+              spotify_uri TEXT NOT NULL,
+              isrc TEXT,
+              title TEXT NOT NULL,
+              artist_name TEXT NOT NULL
+            );
+            CREATE TABLE preview_matches (
+              id INTEGER PRIMARY KEY,
+              track_id INTEGER NOT NULL UNIQUE,
+              provider TEXT NOT NULL,
+              provider_track_id TEXT,
+              preview_url TEXT,
+              match_method TEXT NOT NULL,
+              confidence REAL NOT NULL,
+              status TEXT NOT NULL,
+              failure_reason TEXT,
+              resolved_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            INSERT INTO tracks (id, spotify_track_id, spotify_uri, isrc, title, artist_name)
+            VALUES (1, 'spotify-track-1', 'spotify:track:1', 'US123', 'Track One', 'Artist');
+            INSERT INTO preview_matches (
+              track_id,
+              provider,
+              provider_track_id,
+              preview_url,
+              match_method,
+              confidence,
+              status
+            ) VALUES (1, 'deezer', 'deezer-1', 'https://example.com/preview.mp3', 'isrc', 1.0, 'matched');
+            """
+        )
+
+        initialize_schema(db)
+
+        preview_columns = {
+            row["name"] for row in db.execute("PRAGMA table_info(preview_matches)")
+        }
+        match = db.execute("SELECT * FROM preview_matches WHERE track_id = 1").fetchone()
+
+        assert "confidence" not in preview_columns
+        assert match["provider"] == "deezer"
+        assert match["provider_track_id"] == "deezer-1"
+        assert match["preview_url"] == "https://example.com/preview.mp3"
+        assert match["match_method"] == "isrc"
+        assert match["status"] == "matched"
     finally:
         db.close()
 
@@ -91,6 +152,7 @@ def test_catalog_status_reports_first_run_on_empty_database(tmp_path) -> None:
         assert status.track_count == 0
         assert status.preview_match_count == 0
         assert status.embedding_count == 0
+        assert status.ready_track_count == 0
         assert status.needs_spotify_index is True
         assert status.needs_onboarding is True
     finally:
@@ -234,7 +296,52 @@ def test_catalog_status_reports_ready_after_playlist_tracks_and_embeddings(tmp_p
         assert status.track_count == 1
         assert status.preview_match_count == 0
         assert status.embedding_count == 1
+        assert status.ready_track_count == 1
         assert status.needs_onboarding is False
+    finally:
+        db.close()
+
+
+def test_catalog_status_counts_ready_tracks_with_embeddings(tmp_path) -> None:
+    db = connect(tmp_path / "claude-dj.sqlite3")
+
+    try:
+        initialize_schema(db)
+        for track_id in (1, 2, 3):
+            upsert_track(
+                db,
+                spotify_track_id=f"spotify-track-{track_id}",
+                spotify_uri=f"spotify:track:{track_id}",
+                isrc=f"US{track_id}",
+                title=f"Track {track_id}",
+                artist_name="Artist",
+                album_name=None,
+                duration_ms=None,
+                explicit=False,
+                popularity=None,
+            )
+        upsert_track_embedding(
+            db,
+            track_id=1,
+            embedding=[0.25] * EMBEDDING_DIMENSIONS,
+            model_name="OpenMuQ/MuQ-MuLan-large",
+            model_version=None,
+            dimensions=EMBEDDING_DIMENSIONS,
+        )
+        upsert_track_embedding(
+            db,
+            track_id=3,
+            embedding=[0.75] * EMBEDDING_DIMENSIONS,
+            model_name="OpenMuQ/MuQ-MuLan-large",
+            model_version=None,
+            dimensions=EMBEDDING_DIMENSIONS,
+        )
+        db.commit()
+
+        status = get_catalog_status(db)
+
+        assert status.ready_track_count == 2
+        assert status.to_json()["ready_track_count"] == 2
     finally:
         db.close()
 
@@ -275,7 +382,6 @@ def test_fetch_tracks_needing_embeddings_returns_matched_preview_urls(tmp_path) 
             provider_track_id="deezer-1",
             preview_url="https://example.com/preview.mp3",
             match_method="isrc",
-            confidence=1.0,
             status="matched",
             failure_reason=None,
         )
@@ -286,7 +392,6 @@ def test_fetch_tracks_needing_embeddings_returns_matched_preview_urls(tmp_path) 
             provider_track_id=None,
             preview_url=None,
             match_method="isrc",
-            confidence=0.0,
             status="not_found",
             failure_reason="deezer_no_data",
         )
@@ -328,7 +433,6 @@ def test_upsert_track_embedding_stores_vector_and_metadata(tmp_path) -> None:
             provider_track_id="deezer-1",
             preview_url="https://example.com/preview.mp3",
             match_method="isrc",
-            confidence=1.0,
             status="matched",
             failure_reason=None,
         )
@@ -395,7 +499,6 @@ def test_catalog_status_reports_embedding_pending_for_matched_previews_only(tmp_
             provider_track_id="deezer-1",
             preview_url="https://example.com/preview.mp3",
             match_method="isrc",
-            confidence=1.0,
             status="matched",
             failure_reason=None,
         )
@@ -406,7 +509,6 @@ def test_catalog_status_reports_embedding_pending_for_matched_previews_only(tmp_
             provider_track_id=None,
             preview_url=None,
             match_method="isrc",
-            confidence=0.0,
             status="not_found",
             failure_reason="deezer_no_data",
         )

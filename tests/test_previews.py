@@ -104,9 +104,8 @@ def test_resolve_deezer_previews_skips_cached_preview_matches(tmp_path) -> None:
           provider_track_id,
           preview_url,
           match_method,
-          confidence,
           status
-        ) VALUES (?, 'deezer', 'deezer-1', 'https://example.com/old.mp3', 'isrc', 1.0, 'matched')
+        ) VALUES (?, 'deezer', 'deezer-1', 'https://example.com/old.mp3', 'isrc', 'matched')
         """,
         (track_id,),
     )
@@ -120,6 +119,44 @@ def test_resolve_deezer_previews_skips_cached_preview_matches(tmp_path) -> None:
 
         assert summary.resolved_count == 0
         assert summary.catalog_status.preview_pending_count == 0
+    finally:
+        db.close()
+
+
+def test_resolve_deezer_previews_leaves_transient_failures_pending(tmp_path) -> None:
+    db = connect(tmp_path / "claude-dj.sqlite3")
+    initialize_schema(db)
+    upsert_track(
+        db,
+        spotify_track_id="spotify-track-1",
+        spotify_uri="spotify:track:1",
+        isrc="US123",
+        title="Retry Later",
+        artist_name="Artist",
+        album_name=None,
+        duration_ms=None,
+        explicit=False,
+        popularity=None,
+    )
+
+    def fake_resolver(isrc):
+        return DeezerPreviewResult(
+            status="failed",
+            provider_track_id=None,
+            preview_url=None,
+            failure_reason="url_error:timed out",
+        )
+
+    try:
+        summary = resolve_deezer_previews(db, resolver=fake_resolver, sleep=lambda seconds: None)
+
+        matches = db.execute("SELECT * FROM preview_matches").fetchall()
+
+        assert summary.failed_count == 1
+        assert summary.resolved_count == 0
+        assert matches == []
+        assert summary.catalog_status.preview_pending_count == 1
+        assert summary.catalog_status.needs_preview_resolution is True
     finally:
         db.close()
 

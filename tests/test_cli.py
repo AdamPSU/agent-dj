@@ -60,6 +60,30 @@ def test_status_reports_running_daemon(monkeypatch, tmp_path) -> None:
         stop_test_server(server, thread)
 
 
+def test_sync_posts_to_sync_start_and_prints_on_device_message(monkeypatch) -> None:
+    calls = []
+    response = {
+        "ok": True,
+        "message": "Storing your songs on device.",
+        "sync": {"status": "running"},
+    }
+
+    def fake_post_json(runtime_info, path, body, timeout_seconds=2):
+        calls.append((path, body, timeout_seconds))
+        return response
+
+    monkeypatch.setattr(cli, "load_runtime_info", lambda: object())
+    monkeypatch.setattr(cli, "is_daemon_running", lambda runtime_info: True)
+    monkeypatch.setattr(cli, "post_json", fake_post_json)
+    stdout = io.StringIO()
+
+    exit_code = cli.run(["sync"], stdout=stdout)
+
+    assert exit_code == 0
+    assert calls == [("/sync/start", {}, 2)]
+    assert stdout.getvalue() == "Storing your songs on device.\n"
+
+
 def test_start_attaches_to_existing_daemon(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("CLAUDE_DJ_HOME", str(tmp_path))
     server, thread = start_test_server()
@@ -72,7 +96,7 @@ def test_start_attaches_to_existing_daemon(monkeypatch, tmp_path) -> None:
 
         assert exit_code == 0
         assert "Claude DJ session attached" in stdout.getvalue()
-        assert "Indexing all Spotify playlists is needed" in stdout.getvalue()
+        assert "Storing your songs on device" in stdout.getvalue()
     finally:
         stop_test_server(server, thread)
 
@@ -102,9 +126,7 @@ def test_start_prints_spotify_indexing_summary(monkeypatch, tmp_path) -> None:
         exit_code = cli.run(["start"], stdout=stdout)
 
         assert exit_code == 0
-        assert "Indexed 2 Spotify playlists and 3 tracks" in stdout.getvalue()
-        assert "Skipped 1 Spotify playlist item" in stdout.getvalue()
-        assert "Next: resolving Deezer previews" in stdout.getvalue()
+        assert stdout.getvalue() == "Claude DJ session attached.\nStoring your songs on device.\n"
     finally:
         stop_test_server(server, thread)
 
@@ -146,10 +168,7 @@ def test_start_prints_deezer_preview_resolution_summary(monkeypatch) -> None:
     exit_code = cli.run(["start"], stdout=stdout)
 
     assert exit_code == 0
-    assert "Resolved 2 Deezer preview candidates" in stdout.getvalue()
-    assert "1 matched" in stdout.getvalue()
-    assert "1 missing ISRC" in stdout.getvalue()
-    assert "Next: generating local audio embeddings" in stdout.getvalue()
+    assert stdout.getvalue() == "Claude DJ session attached.\nStoring your songs on device.\n"
 
 
 def test_start_prints_embedding_generation_summary(monkeypatch) -> None:
@@ -186,8 +205,7 @@ def test_start_prints_embedding_generation_summary(monkeypatch) -> None:
     exit_code = cli.run(["start"], stdout=stdout)
 
     assert exit_code == 0
-    assert "Generated 2 local MuQ-MuLan embeddings" in stdout.getvalue()
-    assert "1 embedding failed" in stdout.getvalue()
+    assert stdout.getvalue() == "Claude DJ session attached.\nStoring your songs on device.\n"
 
 
 def test_start_prints_spotify_auth_instruction(monkeypatch, tmp_path) -> None:

@@ -38,7 +38,6 @@ def test_generate_audio_embeddings_stores_real_muq_mulan_vector(tmp_path) -> Non
             provider_track_id=preview.provider_track_id,
             preview_url=preview.preview_url,
             match_method="isrc",
-            confidence=1.0,
             status=preview.status,
             failure_reason=preview.failure_reason,
         )

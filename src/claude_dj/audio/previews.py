@@ -41,7 +41,6 @@ class PreviewResolutionSummary:
             + self.no_preview_count
             + self.not_found_count
             + self.no_isrc_count
-            + self.failed_count
         )
 
     def to_json(self) -> dict[str, int | bool | str]:
@@ -122,8 +121,9 @@ def _store_and_count_result(
     result: DeezerPreviewResult,
     counts: PreviewStatusCounts,
 ) -> None:
-    _store_result(db, track_id=track_id, result=result)
     _increment_count(counts, result.status)
+    if result.status != "failed":
+        _store_result(db, track_id=track_id, result=result)
 
 
 def _increment_count(counts: PreviewStatusCounts, status: str) -> None:
@@ -162,7 +162,6 @@ def _store_result(
         provider_track_id=result.provider_track_id,
         preview_url=result.preview_url,
         match_method="isrc",
-        confidence=1.0 if result.status == "matched" else 0.0,
         status=result.status,
         failure_reason=result.failure_reason,
     )

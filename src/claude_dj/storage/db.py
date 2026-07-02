@@ -22,6 +22,7 @@ class CatalogStatus:
     source_count: int
     track_count: int
     embedding_count: int
+    ready_track_count: int = 0
     preview_match_count: int = 0
     preview_pending_count: int | None = None
     embedding_pending_count: int | None = None
@@ -59,6 +60,7 @@ class CatalogStatus:
             "preview_match_count": self.preview_match_count,
             "preview_pending_count": self._preview_pending_count(),
             "embedding_count": self.embedding_count,
+            "ready_track_count": self.ready_track_count,
             "embedding_pending_count": self._embedding_pending_count(),
             "needs_spotify_index": self.needs_spotify_index,
             "needs_preview_resolution": self.needs_preview_resolution,
@@ -109,6 +111,7 @@ def connect(database_file: Path) -> sqlite3.Connection:
 def initialize_schema(db: sqlite3.Connection, dimensions: int = EMBEDDING_DIMENSIONS) -> None:
     """Create the initial metadata and vector-search schema if needed."""
     _drop_embedding_tables_if_dimension_mismatch(db, dimensions)
+    _migrate_preview_matches_without_confidence(db)
     db.executescript(
         """
         CREATE TABLE IF NOT EXISTS tracks (
@@ -157,7 +160,6 @@ def initialize_schema(db: sqlite3.Connection, dimensions: int = EMBEDDING_DIMENS
           provider_track_id TEXT,
           preview_url TEXT,
           match_method TEXT NOT NULL,
-          confidence REAL NOT NULL,
           status TEXT NOT NULL,
           failure_reason TEXT,
           resolved_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -189,6 +191,7 @@ def get_catalog_status(db: sqlite3.Connection) -> CatalogStatus:
         preview_match_count=_count(db, "preview_matches"),
         preview_pending_count=_preview_pending_count(db),
         embedding_count=_count(db, "track_embeddings"),
+        ready_track_count=_ready_track_count(db),
         embedding_pending_count=_embedding_pending_count(db),
     )
 
@@ -391,7 +394,6 @@ def upsert_preview_match(
     provider_track_id: str | None,
     preview_url: str | None,
     match_method: str,
-    confidence: float,
     status: str,
     failure_reason: str | None,
 ) -> None:
@@ -404,16 +406,14 @@ def upsert_preview_match(
           provider_track_id,
           preview_url,
           match_method,
-          confidence,
           status,
           failure_reason
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(track_id) DO UPDATE SET
           provider = excluded.provider,
           provider_track_id = excluded.provider_track_id,
           preview_url = excluded.preview_url,
           match_method = excluded.match_method,
-          confidence = excluded.confidence,
           status = excluded.status,
           failure_reason = excluded.failure_reason,
           resolved_at = CURRENT_TIMESTAMP
@@ -424,7 +424,6 @@ def upsert_preview_match(
             provider_track_id,
             preview_url,
             match_method,
-            confidence,
             status,
             failure_reason,
         ),
@@ -463,6 +462,19 @@ def _embedding_pending_count(db: sqlite3.Connection) -> int:
     return int(row["count"])
 
 
+def _ready_track_count(db: sqlite3.Connection) -> int:
+    row = db.execute(
+        """
+        SELECT COUNT(*) AS count
+        FROM tracks
+        JOIN track_embeddings ON track_embeddings.track_id = tracks.id
+        WHERE tracks.spotify_uri IS NOT NULL
+          AND tracks.spotify_uri != ''
+        """
+    ).fetchone()
+    return int(row["count"])
+
+
 def _drop_embedding_tables_if_dimension_mismatch(db: sqlite3.Connection, dimensions: int) -> None:
     row = db.execute(
         "SELECT sql FROM sqlite_master WHERE name = 'track_embeddings'"
@@ -476,3 +488,53 @@ def _drop_embedding_tables_if_dimension_mismatch(db: sqlite3.Connection, dimensi
 
     db.execute("DROP TABLE IF EXISTS track_embeddings")
     db.execute("DROP TABLE IF EXISTS embedding_metadata")
+
+
+def _migrate_preview_matches_without_confidence(db: sqlite3.Connection) -> None:
+    columns = {row["name"] for row in db.execute("PRAGMA table_info(preview_matches)")}
+    if "confidence" not in columns:
+        return
+
+    db.executescript(
+        """
+        ALTER TABLE preview_matches RENAME TO preview_matches_legacy_confidence;
+
+        CREATE TABLE preview_matches (
+          id INTEGER PRIMARY KEY,
+          track_id INTEGER NOT NULL UNIQUE,
+          provider TEXT NOT NULL,
+          provider_track_id TEXT,
+          preview_url TEXT,
+          match_method TEXT NOT NULL,
+          status TEXT NOT NULL,
+          failure_reason TEXT,
+          resolved_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          FOREIGN KEY (track_id) REFERENCES tracks(id) ON DELETE CASCADE
+        );
+
+        INSERT INTO preview_matches (
+          id,
+          track_id,
+          provider,
+          provider_track_id,
+          preview_url,
+          match_method,
+          status,
+          failure_reason,
+          resolved_at
+        )
+        SELECT
+          id,
+          track_id,
+          provider,
+          provider_track_id,
+          preview_url,
+          match_method,
+          status,
+          failure_reason,
+          resolved_at
+        FROM preview_matches_legacy_confidence;
+
+        DROP TABLE preview_matches_legacy_confidence;
+        """
+    )
