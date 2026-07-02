@@ -9,6 +9,7 @@ import urllib.request
 import pytest
 
 from claude_dj.daemon import PREVIEW_RESOLUTION_BATCH_SIZE, create_server, write_runtime_file
+from claude_dj.audio.embeddings import EmbeddingGenerationSummary
 from claude_dj.audio.previews import PreviewResolutionSummary
 from claude_dj.indexing import (
     IndexSummary,
@@ -165,6 +166,7 @@ def test_session_start_resolves_deezer_previews_after_spotify_indexing() -> None
                 embedding_count=0,
                 preview_match_count=2,
                 preview_pending_count=0,
+                embedding_pending_count=2,
             ),
             matched_count=2,
         )
@@ -202,6 +204,73 @@ def test_session_start_resolves_deezer_previews_after_spotify_indexing() -> None
         }
         assert response["onboarding"]["resolve_previews"] is False
         assert response["onboarding"]["embed_tracks"] is True
+    finally:
+        stop_test_server(server, thread)
+
+
+def test_session_start_generates_embeddings_after_preview_resolution() -> None:
+    calls = []
+
+    def fake_preview_resolver() -> PreviewResolutionSummary:
+        return PreviewResolutionSummary(
+            catalog_status=CatalogStatus(
+                source_count=1,
+                track_count=2,
+                embedding_count=0,
+                preview_match_count=2,
+                preview_pending_count=0,
+                embedding_pending_count=2,
+            ),
+            matched_count=2,
+        )
+
+    def fake_embedding_generator() -> EmbeddingGenerationSummary:
+        calls.append(True)
+        return EmbeddingGenerationSummary(
+            catalog_status=CatalogStatus(
+                source_count=1,
+                track_count=2,
+                embedding_count=2,
+                preview_match_count=2,
+                preview_pending_count=0,
+                embedding_pending_count=0,
+            ),
+            embedded_count=2,
+        )
+
+    server = create_server(
+        catalog_status=CatalogStatus(
+            source_count=1,
+            track_count=2,
+            embedding_count=0,
+            preview_match_count=0,
+            preview_pending_count=2,
+        ),
+        preview_resolver=fake_preview_resolver,
+        embedding_generator=fake_embedding_generator,
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+
+    try:
+        host, port = server.server_address
+
+        response = json_request(
+            "POST",
+            f"http://{host}:{port}/session/start",
+            {"session_id": "test-session"},
+        )
+
+        assert calls == [True]
+        assert response["catalog"]["embedding_count"] == 2
+        assert response["indexing"]["embeddings"] == {
+            "ran": True,
+            "model": "OpenMuQ/MuQ-MuLan-large",
+            "dimensions": 512,
+            "embedded_count": 2,
+            "failed_count": 0,
+        }
+        assert response["onboarding"]["embed_tracks"] is False
     finally:
         stop_test_server(server, thread)
 

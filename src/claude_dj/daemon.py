@@ -11,6 +11,7 @@ import os
 import threading
 
 from claude_dj.config import ensure_app_dir, get_database_file, get_runtime_file, get_spotify_token_file
+from claude_dj.audio.embeddings import EmbeddingGenerationSummary, generate_audio_embeddings
 from claude_dj.audio.previews import (
     DEEZER_RATE_LIMIT_REQUESTS,
     PreviewResolutionSummary,
@@ -32,6 +33,7 @@ PREVIEW_RESOLUTION_BATCH_SIZE = DEEZER_RATE_LIMIT_REQUESTS
 
 SpotifyIndexer = Callable[[], IndexSummary]
 PreviewResolver = Callable[[], PreviewResolutionSummary]
+EmbeddingGenerator = Callable[[], EmbeddingGenerationSummary]
 
 
 class DaemonState:
@@ -44,6 +46,7 @@ class DaemonState:
         catalog_status: CatalogStatus,
         spotify_indexer: SpotifyIndexer | None,
         preview_resolver: PreviewResolver | None,
+        embedding_generator: EmbeddingGenerator | None,
     ) -> None:
         self.host = host
         self.port = port
@@ -52,6 +55,7 @@ class DaemonState:
         self.catalog_status = catalog_status
         self.spotify_indexer = spotify_indexer
         self.preview_resolver = preview_resolver
+        self.embedding_generator = embedding_generator
 
 
 class ClaudeDJHTTPServer(ThreadingHTTPServer):
@@ -112,6 +116,7 @@ class DaemonRequestHandler(BaseHTTPRequestHandler):
         self.server.state.active_session_id = session_id
         spotify_indexing = self._maybe_index_spotify_catalog()
         preview_resolution = self._maybe_resolve_deezer_previews()
+        embedding_generation = self._maybe_generate_audio_embeddings()
         self._send_json(
             200,
             {
@@ -119,7 +124,11 @@ class DaemonRequestHandler(BaseHTTPRequestHandler):
                 "message": "Claude DJ session attached.",
                 "active_session_id": self.server.state.active_session_id,
                 "catalog": self.server.state.catalog_status.to_json(),
-                "indexing": {"spotify": spotify_indexing, "previews": preview_resolution},
+                "indexing": {
+                    "spotify": spotify_indexing,
+                    "previews": preview_resolution,
+                    "embeddings": embedding_generation,
+                },
                 "onboarding": {
                     "index_all_playlists": self.server.state.catalog_status.needs_spotify_index,
                     "resolve_previews": self.server.state.catalog_status.needs_preview_resolution,
@@ -149,6 +158,16 @@ class DaemonRequestHandler(BaseHTTPRequestHandler):
                 "message": str(exc),
             }
 
+        self.server.state.catalog_status = summary.catalog_status
+        return summary.to_json()
+
+    def _maybe_generate_audio_embeddings(self) -> dict[str, object]:
+        if not self.server.state.catalog_status.needs_embeddings:
+            return {"ran": False}
+        if self.server.state.embedding_generator is None:
+            return {"ran": False}
+
+        summary = self.server.state.embedding_generator()
         self.server.state.catalog_status = summary.catalog_status
         return summary.to_json()
 
@@ -187,6 +206,7 @@ def create_server(
     catalog_status: CatalogStatus | None = None,
     spotify_indexer: SpotifyIndexer | None = None,
     preview_resolver: PreviewResolver | None = None,
+    embedding_generator: EmbeddingGenerator | None = None,
 ) -> ClaudeDJHTTPServer:
     """Create a loopback-only local HTTP daemon server."""
     server = ClaudeDJHTTPServer((host, port), DaemonRequestHandler)
@@ -197,6 +217,7 @@ def create_server(
         catalog_status=catalog_status or CatalogStatus(0, 0, 0),
         spotify_indexer=spotify_indexer,
         preview_resolver=preview_resolver,
+        embedding_generator=embedding_generator,
     )
     return server
 
@@ -239,10 +260,19 @@ def run_daemon() -> int:
         finally:
             preview_db.close()
 
+    def embedding_generator() -> EmbeddingGenerationSummary:
+        embedding_db = connect(database_file)
+        try:
+            initialize_schema(embedding_db)
+            return generate_audio_embeddings(embedding_db)
+        finally:
+            embedding_db.close()
+
     server = create_server(
         catalog_status=catalog_status,
         spotify_indexer=spotify_indexer,
         preview_resolver=preview_resolver,
+        embedding_generator=embedding_generator,
     )
     host, port = server.server_address
     write_runtime_file(runtime_file, pid=os.getpid(), host=host, port=port)

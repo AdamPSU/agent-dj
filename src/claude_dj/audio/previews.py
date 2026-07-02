@@ -18,6 +18,7 @@ from claude_dj.storage.db import (
 DEEZER_RATE_LIMIT_REQUESTS = 50
 DEEZER_RATE_LIMIT_WINDOW_SECONDS = 5
 DEEZER_REQUESTS_PER_SECOND = DEEZER_RATE_LIMIT_REQUESTS // DEEZER_RATE_LIMIT_WINDOW_SECONDS
+PreviewStatusCounts = dict[str, int]
 
 
 @dataclass(frozen=True)
@@ -70,7 +71,7 @@ def resolve_deezer_previews(
     max_tracks: int | None = None,
 ) -> PreviewResolutionSummary:
     """Resolve missing track previews through Deezer using ISRCs only."""
-    counts = {
+    counts: PreviewStatusCounts = {
         "matched": 0,
         "no_preview": 0,
         "not_found": 0,
@@ -83,17 +84,12 @@ def resolve_deezer_previews(
     candidates = fetch_tracks_needing_preview_resolution(db, limit=max_tracks)
     for candidate in candidates:
         if candidate.isrc is None:
-            _store_result(
+            _store_and_count_result(
                 db,
                 track_id=candidate.track_id,
-                result=DeezerPreviewResult(
-                    status="no_isrc",
-                    provider_track_id=None,
-                    preview_url=None,
-                    failure_reason="missing_isrc",
-                ),
+                result=_missing_isrc_result(),
+                counts=counts,
             )
-            counts["no_isrc"] += 1
             continue
 
         result = resolver(candidate.isrc)
@@ -101,18 +97,49 @@ def resolve_deezer_previews(
             counts["rate_limited"] += 1
             break
 
-        _store_result(db, track_id=candidate.track_id, result=result)
-        if result.status in counts:
-            counts[result.status] += 1
-        else:
-            counts["failed"] += 1
+        _store_and_count_result(db, track_id=candidate.track_id, result=result, counts=counts)
 
         if delay:
             sleep(delay)
 
     db.commit()
+    return _summary_from_counts(catalog_status=get_catalog_status(db), counts=counts)
+
+
+def _missing_isrc_result() -> DeezerPreviewResult:
+    return DeezerPreviewResult(
+        status="no_isrc",
+        provider_track_id=None,
+        preview_url=None,
+        failure_reason="missing_isrc",
+    )
+
+
+def _store_and_count_result(
+    db: sqlite3.Connection,
+    *,
+    track_id: int,
+    result: DeezerPreviewResult,
+    counts: PreviewStatusCounts,
+) -> None:
+    _store_result(db, track_id=track_id, result=result)
+    _increment_count(counts, result.status)
+
+
+def _increment_count(counts: PreviewStatusCounts, status: str) -> None:
+    if status in counts:
+        counts[status] += 1
+    else:
+        counts["failed"] += 1
+
+
+def _summary_from_counts(
+    *,
+    catalog_status: CatalogStatus,
+    counts: PreviewStatusCounts,
+) -> PreviewResolutionSummary:
     return PreviewResolutionSummary(
-        catalog_status=get_catalog_status(db),
+        catalog_status=catalog_status,
         matched_count=counts["matched"],
         no_preview_count=counts["no_preview"],
         not_found_count=counts["not_found"],

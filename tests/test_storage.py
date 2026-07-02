@@ -4,11 +4,15 @@ import array
 
 from claude_dj.storage.db import (
     EMBEDDING_DIMENSIONS,
+    TrackEmbeddingCandidate,
     connect,
+    fetch_tracks_needing_embeddings,
     get_catalog_status,
     initialize_schema,
     replace_source_tracks,
+    upsert_preview_match,
     upsert_source,
+    upsert_track_embedding,
     upsert_track,
 )
 
@@ -37,6 +41,40 @@ def test_initialize_schema_creates_metadata_and_vector_tables(tmp_path) -> None:
         assert "embedding_metadata" in tables
         assert "index_runs" not in tables
         assert "track_index_status" not in tables
+        assert EMBEDDING_DIMENSIONS == 512
+    finally:
+        db.close()
+
+
+def test_initialize_schema_replaces_placeholder_embedding_dimensions(tmp_path) -> None:
+    db = connect(tmp_path / "claude-dj.sqlite3")
+
+    try:
+        db.execute(
+            "CREATE VIRTUAL TABLE track_embeddings USING vec0(track_id INTEGER PRIMARY KEY, embedding FLOAT[4])"
+        )
+        db.execute(
+            """
+            CREATE TABLE embedding_metadata (
+              track_id INTEGER PRIMARY KEY,
+              model_name TEXT NOT NULL,
+              model_version TEXT,
+              dimensions INTEGER NOT NULL
+            )
+            """
+        )
+
+        initialize_schema(db)
+
+        sql = db.execute(
+            "SELECT sql FROM sqlite_master WHERE name = 'track_embeddings'"
+        ).fetchone()["sql"]
+        db.execute(
+            "INSERT INTO track_embeddings (track_id, embedding) VALUES (?, ?)",
+            (1, vector([0.0] * EMBEDDING_DIMENSIONS)),
+        )
+
+        assert f"FLOAT[{EMBEDDING_DIMENSIONS}]" in sql
     finally:
         db.close()
 
@@ -89,7 +127,7 @@ def test_catalog_status_reports_phase_specific_readiness(tmp_path) -> None:
 
         assert status.needs_spotify_index is False
         assert status.needs_preview_resolution is True
-        assert status.needs_embeddings is True
+        assert status.needs_embeddings is False
         assert status.ready_for_audio_similarity is False
     finally:
         db.close()
@@ -201,6 +239,202 @@ def test_catalog_status_reports_ready_after_playlist_tracks_and_embeddings(tmp_p
         db.close()
 
 
+def test_fetch_tracks_needing_embeddings_returns_matched_preview_urls(tmp_path) -> None:
+    db = connect(tmp_path / "claude-dj.sqlite3")
+
+    try:
+        initialize_schema(db)
+        matched_track_id = upsert_track(
+            db,
+            spotify_track_id="spotify-track-1",
+            spotify_uri="spotify:track:1",
+            isrc="US123",
+            title="Matched",
+            artist_name="Artist",
+            album_name=None,
+            duration_ms=None,
+            explicit=False,
+            popularity=None,
+        )
+        failed_track_id = upsert_track(
+            db,
+            spotify_track_id="spotify-track-2",
+            spotify_uri="spotify:track:2",
+            isrc="US456",
+            title="Failed",
+            artist_name="Artist",
+            album_name=None,
+            duration_ms=None,
+            explicit=False,
+            popularity=None,
+        )
+        upsert_preview_match(
+            db,
+            track_id=matched_track_id,
+            provider="deezer",
+            provider_track_id="deezer-1",
+            preview_url="https://example.com/preview.mp3",
+            match_method="isrc",
+            confidence=1.0,
+            status="matched",
+            failure_reason=None,
+        )
+        upsert_preview_match(
+            db,
+            track_id=failed_track_id,
+            provider="deezer",
+            provider_track_id=None,
+            preview_url=None,
+            match_method="isrc",
+            confidence=0.0,
+            status="not_found",
+            failure_reason="deezer_no_data",
+        )
+        db.commit()
+
+        candidates = fetch_tracks_needing_embeddings(db)
+
+        assert candidates == [
+            TrackEmbeddingCandidate(
+                track_id=matched_track_id,
+                preview_url="https://example.com/preview.mp3",
+            )
+        ]
+    finally:
+        db.close()
+
+
+def test_upsert_track_embedding_stores_vector_and_metadata(tmp_path) -> None:
+    db = connect(tmp_path / "claude-dj.sqlite3")
+
+    try:
+        initialize_schema(db)
+        track_id = upsert_track(
+            db,
+            spotify_track_id="spotify-track-1",
+            spotify_uri="spotify:track:1",
+            isrc="US123",
+            title="Matched",
+            artist_name="Artist",
+            album_name=None,
+            duration_ms=None,
+            explicit=False,
+            popularity=None,
+        )
+        upsert_preview_match(
+            db,
+            track_id=track_id,
+            provider="deezer",
+            provider_track_id="deezer-1",
+            preview_url="https://example.com/preview.mp3",
+            match_method="isrc",
+            confidence=1.0,
+            status="matched",
+            failure_reason=None,
+        )
+
+        upsert_track_embedding(
+            db,
+            track_id=track_id,
+            embedding=[0.25] * EMBEDDING_DIMENSIONS,
+            model_name="OpenMuQ/MuQ-MuLan-large",
+            model_version=None,
+            dimensions=EMBEDDING_DIMENSIONS,
+        )
+        db.commit()
+
+        status = get_catalog_status(db)
+        metadata = db.execute(
+            "SELECT * FROM embedding_metadata WHERE track_id = ?",
+            (track_id,),
+        ).fetchone()
+        candidates = fetch_tracks_needing_embeddings(db)
+
+        assert status.embedding_count == 1
+        assert metadata["model_name"] == "OpenMuQ/MuQ-MuLan-large"
+        assert metadata["model_version"] is None
+        assert metadata["dimensions"] == EMBEDDING_DIMENSIONS
+        assert candidates == []
+    finally:
+        db.close()
+
+
+def test_catalog_status_reports_embedding_pending_for_matched_previews_only(tmp_path) -> None:
+    db = connect(tmp_path / "claude-dj.sqlite3")
+
+    try:
+        initialize_schema(db)
+        matched_track_id = upsert_track(
+            db,
+            spotify_track_id="spotify-track-1",
+            spotify_uri="spotify:track:1",
+            isrc="US123",
+            title="Matched",
+            artist_name="Artist",
+            album_name=None,
+            duration_ms=None,
+            explicit=False,
+            popularity=None,
+        )
+        failed_track_id = upsert_track(
+            db,
+            spotify_track_id="spotify-track-2",
+            spotify_uri="spotify:track:2",
+            isrc="US456",
+            title="Failed",
+            artist_name="Artist",
+            album_name=None,
+            duration_ms=None,
+            explicit=False,
+            popularity=None,
+        )
+        upsert_preview_match(
+            db,
+            track_id=matched_track_id,
+            provider="deezer",
+            provider_track_id="deezer-1",
+            preview_url="https://example.com/preview.mp3",
+            match_method="isrc",
+            confidence=1.0,
+            status="matched",
+            failure_reason=None,
+        )
+        upsert_preview_match(
+            db,
+            track_id=failed_track_id,
+            provider="deezer",
+            provider_track_id=None,
+            preview_url=None,
+            match_method="isrc",
+            confidence=0.0,
+            status="not_found",
+            failure_reason="deezer_no_data",
+        )
+        db.commit()
+
+        status = get_catalog_status(db)
+
+        assert status.embedding_pending_count == 1
+        assert status.needs_embeddings is True
+
+        upsert_track_embedding(
+            db,
+            track_id=matched_track_id,
+            embedding=[0.25] * EMBEDDING_DIMENSIONS,
+            model_name="OpenMuQ/MuQ-MuLan-large",
+            model_version=None,
+            dimensions=EMBEDDING_DIMENSIONS,
+        )
+        db.commit()
+
+        status = get_catalog_status(db)
+
+        assert status.embedding_pending_count == 0
+        assert status.needs_embeddings is False
+    finally:
+        db.close()
+
+
 def test_sqlite_vec_can_query_nearest_neighbors(tmp_path) -> None:
     db = connect(tmp_path / "claude-dj.sqlite3")
 
@@ -208,11 +442,11 @@ def test_sqlite_vec_can_query_nearest_neighbors(tmp_path) -> None:
         initialize_schema(db)
         db.execute(
             "INSERT INTO track_embeddings (track_id, embedding) VALUES (?, ?)",
-            (1, vector([0.0, 0.0, 0.0, 0.0])),
+            (1, vector([0.0] * EMBEDDING_DIMENSIONS)),
         )
         db.execute(
             "INSERT INTO track_embeddings (track_id, embedding) VALUES (?, ?)",
-            (2, vector([1.0, 1.0, 1.0, 1.0])),
+            (2, vector([1.0] * EMBEDDING_DIMENSIONS)),
         )
 
         rows = db.execute(
@@ -223,7 +457,7 @@ def test_sqlite_vec_can_query_nearest_neighbors(tmp_path) -> None:
             ORDER BY distance
             LIMIT 1
             """,
-            (vector([0.1, 0.1, 0.1, 0.1]),),
+            (vector([0.1] * EMBEDDING_DIMENSIONS),),
         ).fetchall()
 
         assert rows[0][0] == 1

@@ -40,6 +40,10 @@ def test_status_reports_not_running_without_runtime(monkeypatch, tmp_path) -> No
     assert "Claude DJ daemon is not running" in stdout.getvalue()
 
 
+def test_session_start_timeout_allows_first_embedding_model_load() -> None:
+    assert cli.SESSION_START_TIMEOUT_SECONDS >= 600
+
+
 def test_status_reports_running_daemon(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("CLAUDE_DJ_HOME", str(tmp_path))
     server, thread = start_test_server()
@@ -148,6 +152,44 @@ def test_start_prints_deezer_preview_resolution_summary(monkeypatch) -> None:
     assert "Next: generating local audio embeddings" in stdout.getvalue()
 
 
+def test_start_prints_embedding_generation_summary(monkeypatch) -> None:
+    response = {
+        "message": "Claude DJ session attached.",
+        "catalog": {
+            "source_count": 1,
+            "track_count": 2,
+            "preview_match_count": 2,
+            "preview_pending_count": 0,
+            "embedding_count": 2,
+            "needs_spotify_index": False,
+            "needs_preview_resolution": False,
+            "needs_embeddings": False,
+        },
+        "indexing": {
+            "spotify": {"ran": False},
+            "previews": {"ran": False},
+            "embeddings": {
+                "ran": True,
+                "model": "OpenMuQ/MuQ-MuLan-large",
+                "dimensions": 512,
+                "embedded_count": 2,
+                "failed_count": 1,
+            },
+        },
+    }
+
+    monkeypatch.setattr(cli, "load_runtime_info", lambda: object())
+    monkeypatch.setattr(cli, "is_daemon_running", lambda runtime_info: True)
+    monkeypatch.setattr(cli, "post_json", lambda runtime_info, path, body, **kwargs: response)
+    stdout = io.StringIO()
+
+    exit_code = cli.run(["start"], stdout=stdout)
+
+    assert exit_code == 0
+    assert "Generated 2 local MuQ-MuLan embeddings" in stdout.getvalue()
+    assert "1 embedding failed" in stdout.getvalue()
+
+
 def test_start_prints_spotify_auth_instruction(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("CLAUDE_DJ_HOME", str(tmp_path))
     response = {
@@ -253,7 +295,7 @@ def test_start_allows_long_running_session_start(monkeypatch) -> None:
     exit_code = cli.run(["start"], stdout=stdout)
 
     assert exit_code == 0
-    assert calls == [90]
+    assert calls == [cli.SESSION_START_TIMEOUT_SECONDS]
 
 
 def test_quit_stops_running_daemon(monkeypatch, tmp_path) -> None:

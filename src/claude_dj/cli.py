@@ -19,7 +19,7 @@ from claude_dj.models import RuntimeInfo
 
 
 STARTUP_TIMEOUT_SECONDS = 2.0
-SESSION_START_TIMEOUT_SECONDS = 90
+SESSION_START_TIMEOUT_SECONDS = 600
 
 
 def main() -> int:
@@ -103,6 +103,16 @@ def write_start_details(response: dict[str, object], stdout: TextIO) -> None:
         if preview_resolution.get("error_code") == "deezer_rate_limited":
             stdout.write("Deezer rate limit reached; preview resolution will continue later.\n")
 
+    embedding_generation = _embedding_generation(response)
+    if embedding_generation.get("ran") is True:
+        embedded_count = int(embedding_generation.get("embedded_count") or 0)
+        failed_count = int(embedding_generation.get("failed_count") or 0)
+        if embedded_count:
+            stdout.write(f"Generated {embedded_count} local MuQ-MuLan embeddings.\n")
+        if failed_count:
+            suffix = "embedding" if failed_count == 1 else "embeddings"
+            stdout.write(f"{failed_count} {suffix} failed.\n")
+
     catalog = response.get("catalog", {})
     if not isinstance(catalog, dict):
         return
@@ -128,6 +138,14 @@ def _preview_resolution(response: dict[str, object]) -> dict[str, object]:
         return {}
     previews = indexing.get("previews")
     return previews if isinstance(previews, dict) else {}
+
+
+def _embedding_generation(response: dict[str, object]) -> dict[str, object]:
+    indexing = response.get("indexing")
+    if not isinstance(indexing, dict):
+        return {}
+    embeddings = indexing.get("embeddings")
+    return embeddings if isinstance(embeddings, dict) else {}
 
 
 def status(stdout: TextIO) -> int:

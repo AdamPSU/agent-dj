@@ -31,21 +31,23 @@ def resolve_isrc_preview(
     rate_limit_backoff_seconds: tuple[float, ...] = RATE_LIMIT_BACKOFF_SECONDS,
 ) -> DeezerPreviewResult:
     """Resolve one ISRC to a Deezer 30-second preview URL."""
-    request = urllib.request.Request(
+    request = _isrc_track_request(isrc)
+    result = _resolve_request(request, urlopen=urlopen)
+
+    for backoff_seconds in rate_limit_backoff_seconds:
+        if result.status != "rate_limited":
+            return result
+        sleep(backoff_seconds)
+        result = _resolve_request(request, urlopen=urlopen)
+
+    return result
+
+
+def _isrc_track_request(isrc: str) -> urllib.request.Request:
+    return urllib.request.Request(
         f"{API_BASE_URL}/track/isrc:{quote(isrc, safe='')}",
         method="GET",
     )
-    retryable_rate_limit: DeezerPreviewResult | None = None
-
-    for attempt in range(len(rate_limit_backoff_seconds) + 1):
-        result = _resolve_request(request, urlopen=urlopen)
-        if result.status != "rate_limited":
-            return result
-        retryable_rate_limit = result
-        if attempt < len(rate_limit_backoff_seconds):
-            sleep(rate_limit_backoff_seconds[attempt])
-
-    return retryable_rate_limit or _result("rate_limited", failure_reason="rate_limited")
 
 
 def _resolve_request(request: urllib.request.Request, *, urlopen) -> DeezerPreviewResult:

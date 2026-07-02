@@ -28,6 +28,7 @@ DEFAULT_SPOTIFY_SCOPES = (
 TOKEN_URL = "https://accounts.spotify.com/api/token"
 API_BASE_URL = "https://api.spotify.com/v1"
 LOGIN_COMPLETE_HTML = b"Spotify login complete. You can close this tab."
+REQUEST_TIMEOUT_SECONDS = 10
 
 
 class SpotifyAuthError(RuntimeError):
@@ -181,22 +182,16 @@ def exchange_authorization_code(
     urlopen=urllib.request.urlopen,
 ) -> dict[str, object]:
     """Exchange a Spotify authorization code for access and refresh tokens."""
-    request = urllib.request.Request(
-        TOKEN_URL,
-        data=urlencode(
-            {
-                "client_id": config.client_id,
-                "grant_type": "authorization_code",
-                "code": code,
-                "redirect_uri": config.redirect_uri,
-                "code_verifier": code_verifier,
-            }
-        ).encode("utf-8"),
-        headers={"Content-Type": "application/x-www-form-urlencoded"},
-        method="POST",
+    return _post_token_request(
+        {
+            "client_id": config.client_id,
+            "grant_type": "authorization_code",
+            "code": code,
+            "redirect_uri": config.redirect_uri,
+            "code_verifier": code_verifier,
+        },
+        urlopen=urlopen,
     )
-    with urlopen(request, timeout=10) as response:
-        return json.loads(response.read().decode("utf-8"))
 
 
 def load_token(token_file: Path) -> dict[str, object]:
@@ -224,20 +219,14 @@ def refresh_access_token(
     if not isinstance(refresh_token, str) or not refresh_token:
         raise SpotifyAuthError("Spotify login expired. Run spotify-login again.")
 
-    request = urllib.request.Request(
-        TOKEN_URL,
-        data=urlencode(
-            {
-                "client_id": config.client_id,
-                "grant_type": "refresh_token",
-                "refresh_token": refresh_token,
-            }
-        ).encode("utf-8"),
-        headers={"Content-Type": "application/x-www-form-urlencoded"},
-        method="POST",
+    refreshed = _post_token_request(
+        {
+            "client_id": config.client_id,
+            "grant_type": "refresh_token",
+            "refresh_token": refresh_token,
+        },
+        urlopen=urlopen,
     )
-    with urlopen(request, timeout=10) as response:
-        refreshed = json.loads(response.read().decode("utf-8"))
 
     if "refresh_token" not in refreshed:
         refreshed["refresh_token"] = refresh_token
@@ -316,6 +305,17 @@ def save_token(token_file: Path, token: dict[str, object]) -> None:
     token_file.chmod(0o600)
 
 
+def _post_token_request(fields: dict[str, str], *, urlopen) -> dict[str, object]:
+    request = urllib.request.Request(
+        TOKEN_URL,
+        data=urlencode(fields).encode("utf-8"),
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+        method="POST",
+    )
+    with urlopen(request, timeout=REQUEST_TIMEOUT_SECONDS) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
 def _fetch_paginated(
     url: str,
     *,
@@ -341,7 +341,7 @@ def _get_json(url: str, *, access_token: str, urlopen) -> dict[str, object]:
         method="GET",
     )
     try:
-        with urlopen(request, timeout=10) as response:
+        with urlopen(request, timeout=REQUEST_TIMEOUT_SECONDS) as response:
             data = json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
         if exc.code == 401:
@@ -357,30 +357,15 @@ def _normalize_playlist_track(item: object, position: int) -> SpotifyPlaylistTra
     if not isinstance(item, dict) or item.get("is_local") is True:
         return None
 
-    track = item.get("item") if "item" in item else item.get("track")
-    if not isinstance(track, dict) or track.get("type") != "track":
+    track = _playlist_track_payload(item)
+    if track is None:
         return None
 
-    spotify_track_id = track.get("id")
-    spotify_uri = track.get("uri")
-    title = track.get("name")
-    if not all(isinstance(value, str) and value for value in (spotify_track_id, spotify_uri, title)):
+    required_strings = _required_track_strings(track)
+    if required_strings is None:
         return None
+    spotify_track_id, spotify_uri, title = required_strings
 
-    artist_names = [
-        artist.get("name")
-        for artist in track.get("artists", [])
-        if isinstance(artist, dict) and isinstance(artist.get("name"), str)
-    ]
-    artist_name = ", ".join(artist_names) if artist_names else "Unknown Artist"
-    album = track.get("album")
-    album_name = album.get("name") if isinstance(album, dict) and isinstance(album.get("name"), str) else None
-    external_ids = track.get("external_ids")
-    isrc = (
-        external_ids.get("isrc")
-        if isinstance(external_ids, dict) and isinstance(external_ids.get("isrc"), str)
-        else None
-    )
     duration_ms = track.get("duration_ms")
     popularity = track.get("popularity")
     added_at = item.get("added_at")
@@ -389,10 +374,10 @@ def _normalize_playlist_track(item: object, position: int) -> SpotifyPlaylistTra
         track=SpotifyTrack(
             spotify_track_id=str(spotify_track_id),
             spotify_uri=str(spotify_uri),
-            isrc=isrc,
+            isrc=_external_isrc(track),
             title=str(title),
-            artist_name=artist_name,
-            album_name=album_name,
+            artist_name=_artist_name(track),
+            album_name=_album_name(track),
             duration_ms=duration_ms if isinstance(duration_ms, int) else None,
             explicit=bool(track.get("explicit", False)),
             popularity=popularity if isinstance(popularity, int) else None,
@@ -400,3 +385,42 @@ def _normalize_playlist_track(item: object, position: int) -> SpotifyPlaylistTra
         position=position,
         added_at=added_at if isinstance(added_at, str) else None,
     )
+
+
+def _playlist_track_payload(item: dict[str, object]) -> dict[str, object] | None:
+    track = item.get("item") if "item" in item else item.get("track")
+    if not isinstance(track, dict) or track.get("type") != "track":
+        return None
+    return track
+
+
+def _required_track_strings(track: dict[str, object]) -> tuple[str, str, str] | None:
+    spotify_track_id = track.get("id")
+    spotify_uri = track.get("uri")
+    title = track.get("name")
+    if not all(isinstance(value, str) and value for value in (spotify_track_id, spotify_uri, title)):
+        return None
+    return str(spotify_track_id), str(spotify_uri), str(title)
+
+
+def _artist_name(track: dict[str, object]) -> str:
+    artist_names = [
+        artist.get("name")
+        for artist in track.get("artists", [])
+        if isinstance(artist, dict) and isinstance(artist.get("name"), str)
+    ]
+    return ", ".join(artist_names) if artist_names else "Unknown Artist"
+
+
+def _album_name(track: dict[str, object]) -> str | None:
+    album = track.get("album")
+    if isinstance(album, dict) and isinstance(album.get("name"), str):
+        return album.get("name")
+    return None
+
+
+def _external_isrc(track: dict[str, object]) -> str | None:
+    external_ids = track.get("external_ids")
+    if isinstance(external_ids, dict) and isinstance(external_ids.get("isrc"), str):
+        return external_ids.get("isrc")
+    return None

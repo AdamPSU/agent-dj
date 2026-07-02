@@ -3,14 +3,16 @@
 This module will own sessions, tracks, previews, embeddings, and decision history storage.
 """
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
+import array
 import sqlite3
 
 import sqlite_vec
 
 
-EMBEDDING_DIMENSIONS = 4
+EMBEDDING_DIMENSIONS = 512
 
 
 @dataclass(frozen=True)
@@ -22,6 +24,7 @@ class CatalogStatus:
     embedding_count: int
     preview_match_count: int = 0
     preview_pending_count: int | None = None
+    embedding_pending_count: int | None = None
 
     @property
     def needs_spotify_index(self) -> bool:
@@ -36,7 +39,7 @@ class CatalogStatus:
     @property
     def needs_embeddings(self) -> bool:
         """Return whether indexed tracks still need local audio embeddings."""
-        return self.track_count > 0 and self.embedding_count == 0
+        return self._embedding_pending_count() > 0
 
     @property
     def ready_for_audio_similarity(self) -> bool:
@@ -56,6 +59,7 @@ class CatalogStatus:
             "preview_match_count": self.preview_match_count,
             "preview_pending_count": self._preview_pending_count(),
             "embedding_count": self.embedding_count,
+            "embedding_pending_count": self._embedding_pending_count(),
             "needs_spotify_index": self.needs_spotify_index,
             "needs_preview_resolution": self.needs_preview_resolution,
             "needs_embeddings": self.needs_embeddings,
@@ -68,6 +72,11 @@ class CatalogStatus:
             return self.preview_pending_count
         return max(self.track_count - self.preview_match_count, 0)
 
+    def _embedding_pending_count(self) -> int:
+        if self.embedding_pending_count is not None:
+            return self.embedding_pending_count
+        return 0
+
 
 @dataclass(frozen=True)
 class TrackPreviewCandidate:
@@ -75,6 +84,14 @@ class TrackPreviewCandidate:
 
     track_id: int
     isrc: str | None
+
+
+@dataclass(frozen=True)
+class TrackEmbeddingCandidate:
+    """Matched preview row that still needs a local audio embedding."""
+
+    track_id: int
+    preview_url: str
 
 
 def connect(database_file: Path) -> sqlite3.Connection:
@@ -91,6 +108,7 @@ def connect(database_file: Path) -> sqlite3.Connection:
 
 def initialize_schema(db: sqlite3.Connection, dimensions: int = EMBEDDING_DIMENSIONS) -> None:
     """Create the initial metadata and vector-search schema if needed."""
+    _drop_embedding_tables_if_dimension_mismatch(db, dimensions)
     db.executescript(
         """
         CREATE TABLE IF NOT EXISTS tracks (
@@ -171,6 +189,7 @@ def get_catalog_status(db: sqlite3.Connection) -> CatalogStatus:
         preview_match_count=_count(db, "preview_matches"),
         preview_pending_count=_preview_pending_count(db),
         embedding_count=_count(db, "track_embeddings"),
+        embedding_pending_count=_embedding_pending_count(db),
     )
 
 
@@ -302,6 +321,68 @@ def fetch_tracks_needing_preview_resolution(
     ]
 
 
+def fetch_tracks_needing_embeddings(
+    db: sqlite3.Connection,
+    *,
+    limit: int | None = None,
+) -> list[TrackEmbeddingCandidate]:
+    """Return matched preview URLs without a cached embedding row."""
+    query = """
+        SELECT tracks.id, preview_matches.preview_url
+        FROM tracks
+        JOIN preview_matches ON preview_matches.track_id = tracks.id
+        LEFT JOIN track_embeddings ON track_embeddings.track_id = tracks.id
+        WHERE preview_matches.status = 'matched'
+          AND preview_matches.preview_url IS NOT NULL
+          AND preview_matches.preview_url != ''
+          AND track_embeddings.track_id IS NULL
+        ORDER BY tracks.id
+    """
+    params: tuple[int, ...] = ()
+    if limit is not None:
+        query += " LIMIT ?"
+        params = (limit,)
+    rows = db.execute(query, params).fetchall()
+    return [
+        TrackEmbeddingCandidate(
+            track_id=int(row["id"]),
+            preview_url=str(row["preview_url"]),
+        )
+        for row in rows
+    ]
+
+
+def upsert_track_embedding(
+    db: sqlite3.Connection,
+    *,
+    track_id: int,
+    embedding: Sequence[float],
+    model_name: str,
+    model_version: str | None,
+    dimensions: int = EMBEDDING_DIMENSIONS,
+) -> None:
+    """Insert or replace a local audio embedding and its model metadata."""
+    if len(embedding) != dimensions:
+        raise ValueError(f"Embedding must contain {dimensions} floats.")
+
+    db.execute(
+        "INSERT OR REPLACE INTO track_embeddings (track_id, embedding) VALUES (?, ?)",
+        (track_id, array.array("f", embedding).tobytes()),
+    )
+    db.execute(
+        """
+        INSERT INTO embedding_metadata (track_id, model_name, model_version, dimensions)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(track_id) DO UPDATE SET
+          model_name = excluded.model_name,
+          model_version = excluded.model_version,
+          dimensions = excluded.dimensions,
+          created_at = CURRENT_TIMESTAMP
+        """,
+        (track_id, model_name, model_version, dimensions),
+    )
+
+
 def upsert_preview_match(
     db: sqlite3.Connection,
     *,
@@ -365,3 +446,33 @@ def _preview_pending_count(db: sqlite3.Connection) -> int:
         """
     ).fetchone()
     return int(row["count"])
+
+
+def _embedding_pending_count(db: sqlite3.Connection) -> int:
+    row = db.execute(
+        """
+        SELECT COUNT(*) AS count
+        FROM preview_matches
+        LEFT JOIN track_embeddings ON track_embeddings.track_id = preview_matches.track_id
+        WHERE preview_matches.status = 'matched'
+          AND preview_matches.preview_url IS NOT NULL
+          AND preview_matches.preview_url != ''
+          AND track_embeddings.track_id IS NULL
+        """
+    ).fetchone()
+    return int(row["count"])
+
+
+def _drop_embedding_tables_if_dimension_mismatch(db: sqlite3.Connection, dimensions: int) -> None:
+    row = db.execute(
+        "SELECT sql FROM sqlite_master WHERE name = 'track_embeddings'"
+    ).fetchone()
+    if row is None:
+        return
+
+    sql = str(row["sql"] or "")
+    if f"FLOAT[{dimensions}]" in sql:
+        return
+
+    db.execute("DROP TABLE IF EXISTS track_embeddings")
+    db.execute("DROP TABLE IF EXISTS embedding_metadata")
