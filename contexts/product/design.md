@@ -24,9 +24,9 @@ An optional future mood analyzer can run locally. It would convert camera or aud
 
 The Spotify adapter is the only MVP music adapter. It should hide Spotify API details behind music actions such as reading playback state, searching, queueing, skipping, starting playback, and selecting a device.
 
-The v1 DJ controller is a deterministic recommendation layer. It uses playlist metadata, user commands, and local audio embeddings to choose similar songs and record explainable decisions.
+The v1 DJ controller is a deterministic recommendation layer. It uses playlist metadata, user commands, and local audio embeddings when available to choose similar songs and record explainable decisions.
 
-The audio embedding pipeline resolves Spotify tracks by ISRC, fetches matched Apple/iTunes preview audio for local non-commercial prototype use, generates MuQ-MuLan embeddings, and stores derived vectors locally. Spotify remains the playback source of truth, but Spotify audio must not be used as the embedding source.
+The audio embedding pipeline resolves Spotify tracks by ISRC, then fetches preview or audio only from a configured provider with acceptable rights for local analysis. Spotify remains the playback source of truth, but Spotify audio must not be used as the embedding source. Apple/iTunes is not a default provider because iTunes Search does not support documented ISRC lookup and Apple Music requires developer tokens.
 
 The session store records the active session, attached Claude Code clients, recent Spotify actions, user overrides, and explanation history.
 

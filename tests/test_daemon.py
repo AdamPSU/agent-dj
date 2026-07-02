@@ -8,13 +8,18 @@ import urllib.request
 
 import pytest
 
-from claude_dj.daemon import create_server, write_runtime_file
+from claude_dj.daemon import PREVIEW_RESOLUTION_BATCH_SIZE, create_server, write_runtime_file
+from claude_dj.audio.previews import PreviewResolutionSummary
 from claude_dj.indexing import (
     IndexSummary,
     SpotifyIndexingAccessDenied,
     SpotifyIndexingAuthRequired,
 )
 from claude_dj.storage.db import CatalogStatus
+
+
+def test_preview_resolution_batch_fits_one_deezer_rate_limit_window() -> None:
+    assert PREVIEW_RESOLUTION_BATCH_SIZE == 50
 
 
 def start_test_server():
@@ -130,6 +135,73 @@ def test_session_start_indexes_spotify_catalog_when_empty() -> None:
         }
         assert response["onboarding"]["index_all_playlists"] is False
         assert response["onboarding"]["resolve_previews"] is True
+    finally:
+        stop_test_server(server, thread)
+
+
+def test_session_start_resolves_deezer_previews_after_spotify_indexing() -> None:
+    calls = []
+
+    def fake_indexer() -> IndexSummary:
+        return IndexSummary(
+            playlist_count=1,
+            track_count=2,
+            skipped_track_count=0,
+            catalog_status=CatalogStatus(
+                source_count=1,
+                track_count=2,
+                embedding_count=0,
+                preview_match_count=0,
+                preview_pending_count=2,
+            ),
+        )
+
+    def fake_preview_resolver() -> PreviewResolutionSummary:
+        calls.append(True)
+        return PreviewResolutionSummary(
+            catalog_status=CatalogStatus(
+                source_count=1,
+                track_count=2,
+                embedding_count=0,
+                preview_match_count=2,
+                preview_pending_count=0,
+            ),
+            matched_count=2,
+        )
+
+    server = create_server(
+        catalog_status=CatalogStatus(source_count=0, track_count=0, embedding_count=0),
+        spotify_indexer=fake_indexer,
+        preview_resolver=fake_preview_resolver,
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+
+    try:
+        host, port = server.server_address
+
+        response = json_request(
+            "POST",
+            f"http://{host}:{port}/session/start",
+            {"session_id": "test-session"},
+        )
+
+        assert calls == [True]
+        assert response["catalog"]["preview_match_count"] == 2
+        assert response["catalog"]["preview_pending_count"] == 0
+        assert response["indexing"]["previews"] == {
+            "ran": True,
+            "provider": "deezer",
+            "resolved_count": 2,
+            "matched_count": 2,
+            "no_preview_count": 0,
+            "not_found_count": 0,
+            "no_isrc_count": 0,
+            "rate_limited_count": 0,
+            "failed_count": 0,
+        }
+        assert response["onboarding"]["resolve_previews"] is False
+        assert response["onboarding"]["embed_tracks"] is True
     finally:
         stop_test_server(server, thread)
 

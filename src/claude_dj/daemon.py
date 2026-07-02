@@ -11,6 +11,11 @@ import os
 import threading
 
 from claude_dj.config import ensure_app_dir, get_database_file, get_runtime_file, get_spotify_token_file
+from claude_dj.audio.previews import (
+    DEEZER_RATE_LIMIT_REQUESTS,
+    PreviewResolutionSummary,
+    resolve_deezer_previews,
+)
 from claude_dj.indexing import (
     IndexSummary,
     SpotifyIndexingAccessDenied,
@@ -22,9 +27,11 @@ from claude_dj.storage.db import CatalogStatus, connect, get_catalog_status, ini
 
 
 LOOPBACK_HOST = "127.0.0.1"
+PREVIEW_RESOLUTION_BATCH_SIZE = DEEZER_RATE_LIMIT_REQUESTS
 
 
 SpotifyIndexer = Callable[[], IndexSummary]
+PreviewResolver = Callable[[], PreviewResolutionSummary]
 
 
 class DaemonState:
@@ -36,6 +43,7 @@ class DaemonState:
         port: int,
         catalog_status: CatalogStatus,
         spotify_indexer: SpotifyIndexer | None,
+        preview_resolver: PreviewResolver | None,
     ) -> None:
         self.host = host
         self.port = port
@@ -43,6 +51,7 @@ class DaemonState:
         self.active_session_id: str | None = None
         self.catalog_status = catalog_status
         self.spotify_indexer = spotify_indexer
+        self.preview_resolver = preview_resolver
 
 
 class ClaudeDJHTTPServer(ThreadingHTTPServer):
@@ -101,7 +110,8 @@ class DaemonRequestHandler(BaseHTTPRequestHandler):
     def _handle_session_start(self, body: dict[str, object]) -> None:
         session_id = str(body.get("session_id") or "local-cli")
         self.server.state.active_session_id = session_id
-        indexing = self._maybe_index_spotify_catalog()
+        spotify_indexing = self._maybe_index_spotify_catalog()
+        preview_resolution = self._maybe_resolve_deezer_previews()
         self._send_json(
             200,
             {
@@ -109,7 +119,7 @@ class DaemonRequestHandler(BaseHTTPRequestHandler):
                 "message": "Claude DJ session attached.",
                 "active_session_id": self.server.state.active_session_id,
                 "catalog": self.server.state.catalog_status.to_json(),
-                "indexing": {"spotify": indexing},
+                "indexing": {"spotify": spotify_indexing, "previews": preview_resolution},
                 "onboarding": {
                     "index_all_playlists": self.server.state.catalog_status.needs_spotify_index,
                     "resolve_previews": self.server.state.catalog_status.needs_preview_resolution,
@@ -142,6 +152,16 @@ class DaemonRequestHandler(BaseHTTPRequestHandler):
         self.server.state.catalog_status = summary.catalog_status
         return summary.to_json()
 
+    def _maybe_resolve_deezer_previews(self) -> dict[str, object]:
+        if not self.server.state.catalog_status.needs_preview_resolution:
+            return {"ran": False}
+        if self.server.state.preview_resolver is None:
+            return {"ran": False}
+
+        summary = self.server.state.preview_resolver()
+        self.server.state.catalog_status = summary.catalog_status
+        return summary.to_json()
+
     def _read_json_body(self) -> dict[str, object] | None:
         length = int(self.headers.get("Content-Length") or "0")
         raw_body = self.rfile.read(length) if length else b"{}"
@@ -166,6 +186,7 @@ def create_server(
     port: int = 0,
     catalog_status: CatalogStatus | None = None,
     spotify_indexer: SpotifyIndexer | None = None,
+    preview_resolver: PreviewResolver | None = None,
 ) -> ClaudeDJHTTPServer:
     """Create a loopback-only local HTTP daemon server."""
     server = ClaudeDJHTTPServer((host, port), DaemonRequestHandler)
@@ -175,6 +196,7 @@ def create_server(
         port=bound_port,
         catalog_status=catalog_status or CatalogStatus(0, 0, 0),
         spotify_indexer=spotify_indexer,
+        preview_resolver=preview_resolver,
     )
     return server
 
@@ -206,7 +228,22 @@ def run_daemon() -> int:
         finally:
             index_db.close()
 
-    server = create_server(catalog_status=catalog_status, spotify_indexer=spotify_indexer)
+    def preview_resolver() -> PreviewResolutionSummary:
+        preview_db = connect(database_file)
+        try:
+            initialize_schema(preview_db)
+            return resolve_deezer_previews(
+                preview_db,
+                max_tracks=PREVIEW_RESOLUTION_BATCH_SIZE,
+            )
+        finally:
+            preview_db.close()
+
+    server = create_server(
+        catalog_status=catalog_status,
+        spotify_indexer=spotify_indexer,
+        preview_resolver=preview_resolver,
+    )
     host, port = server.server_address
     write_runtime_file(runtime_file, pid=os.getpid(), host=host, port=port)
 

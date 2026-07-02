@@ -85,13 +85,31 @@ def write_start_details(response: dict[str, object], stdout: TextIO) -> None:
             suffix = "item" if skipped_track_count == 1 else "items"
             stdout.write(f"Skipped {skipped_track_count} Spotify playlist {suffix}.\n")
 
+    preview_resolution = _preview_resolution(response)
+    if preview_resolution.get("ran") is True:
+        resolved_count = int(preview_resolution.get("resolved_count") or 0)
+        matched_count = int(preview_resolution.get("matched_count") or 0)
+        no_preview_count = int(preview_resolution.get("no_preview_count") or 0)
+        not_found_count = int(preview_resolution.get("not_found_count") or 0)
+        no_isrc_count = int(preview_resolution.get("no_isrc_count") or 0)
+        failed_count = int(preview_resolution.get("failed_count") or 0)
+        if resolved_count:
+            stdout.write(
+                f"Resolved {resolved_count} Deezer preview candidates: "
+                f"{matched_count} matched, {no_preview_count} no preview, "
+                f"{not_found_count} not found, {no_isrc_count} missing ISRC, "
+                f"{failed_count} failed.\n"
+            )
+        if preview_resolution.get("error_code") == "deezer_rate_limited":
+            stdout.write("Deezer rate limit reached; preview resolution will continue later.\n")
+
     catalog = response.get("catalog", {})
     if not isinstance(catalog, dict):
         return
     if catalog.get("needs_spotify_index") is True:
         stdout.write("Indexing all Spotify playlists is needed before DJ mode is ready.\n")
     elif catalog.get("needs_preview_resolution") is True:
-        stdout.write("Next: resolving Apple/iTunes previews for audio similarity.\n")
+        stdout.write("Next: resolving Deezer previews for audio similarity.\n")
     elif catalog.get("needs_embeddings") is True:
         stdout.write("Next: generating local audio embeddings.\n")
 
@@ -102,6 +120,14 @@ def _spotify_indexing(response: dict[str, object]) -> dict[str, object]:
         return {}
     spotify = indexing.get("spotify")
     return spotify if isinstance(spotify, dict) else {}
+
+
+def _preview_resolution(response: dict[str, object]) -> dict[str, object]:
+    indexing = response.get("indexing")
+    if not isinstance(indexing, dict):
+        return {}
+    previews = indexing.get("previews")
+    return previews if isinstance(previews, dict) else {}
 
 
 def status(stdout: TextIO) -> int:

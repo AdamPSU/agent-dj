@@ -100,9 +100,52 @@ def test_start_prints_spotify_indexing_summary(monkeypatch, tmp_path) -> None:
         assert exit_code == 0
         assert "Indexed 2 Spotify playlists and 3 tracks" in stdout.getvalue()
         assert "Skipped 1 Spotify playlist item" in stdout.getvalue()
-        assert "Next: resolving Apple/iTunes previews" in stdout.getvalue()
+        assert "Next: resolving Deezer previews" in stdout.getvalue()
     finally:
         stop_test_server(server, thread)
+
+
+def test_start_prints_deezer_preview_resolution_summary(monkeypatch) -> None:
+    response = {
+        "message": "Claude DJ session attached.",
+        "catalog": {
+            "source_count": 1,
+            "track_count": 2,
+            "preview_match_count": 2,
+            "preview_pending_count": 0,
+            "embedding_count": 0,
+            "needs_spotify_index": False,
+            "needs_preview_resolution": False,
+            "needs_embeddings": True,
+        },
+        "indexing": {
+            "spotify": {"ran": False},
+            "previews": {
+                "ran": True,
+                "provider": "deezer",
+                "resolved_count": 2,
+                "matched_count": 1,
+                "no_preview_count": 0,
+                "not_found_count": 0,
+                "no_isrc_count": 1,
+                "rate_limited_count": 0,
+                "failed_count": 0,
+            },
+        },
+    }
+
+    monkeypatch.setattr(cli, "load_runtime_info", lambda: object())
+    monkeypatch.setattr(cli, "is_daemon_running", lambda runtime_info: True)
+    monkeypatch.setattr(cli, "post_json", lambda runtime_info, path, body, **kwargs: response)
+    stdout = io.StringIO()
+
+    exit_code = cli.run(["start"], stdout=stdout)
+
+    assert exit_code == 0
+    assert "Resolved 2 Deezer preview candidates" in stdout.getvalue()
+    assert "1 matched" in stdout.getvalue()
+    assert "1 missing ISRC" in stdout.getvalue()
+    assert "Next: generating local audio embeddings" in stdout.getvalue()
 
 
 def test_start_prints_spotify_auth_instruction(monkeypatch, tmp_path) -> None:

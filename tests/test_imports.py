@@ -3,7 +3,7 @@
 
 def test_package_modules_import() -> None:
     import claude_dj
-    import claude_dj.adapters.itunes
+    import claude_dj.adapters.deezer
     import claude_dj.adapters.spotify
     import claude_dj.audio.embeddings
     import claude_dj.audio.previews

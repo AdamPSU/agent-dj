@@ -21,7 +21,7 @@ Open questions:
 
 ## Audio embeddings and vector search
 
-Do not make audio embeddings mandatory for MVP. The current v1 prototype direction is to sync a user's Spotify playlists, resolve tracks by ISRC, fetch 30-second Apple/iTunes previews when available, run MuQ-MuLan embeddings, and build a local similarity index. This is technically plausible for a local non-commercial prototype, but commercial/product use remains legally unclear across normal consumer music APIs.
+Do not make audio embeddings mandatory for MVP. The current v1 direction is to sync a user's Spotify playlists, resolve tracks by ISRC, and keep local embeddings behind a provider gate. A provider must support ISRC resolution, expose preview or audio that can be analyzed locally, avoid paid developer-program enrollment for normal users, and allow the intended download/cache/embedding workflow. The current provider sweep found no clean default.
 
 Safer future architecture:
 
@@ -32,7 +32,15 @@ Local DB = metadata + permitted audio embeddings + user feedback
 DJ controller = uses provider APIs, feedback, optional mood, and embeddings when available
 ```
 
-The recommendation engine should not depend on embedding the user's full Spotify library. A local vector DB can be used for v1 prototype embeddings from matched Apple/iTunes previews, but any broader product path should only populate embeddings from audio sources with explicit rights.
+The recommendation engine should not depend on embedding the user's full Spotify library. A local vector DB can be used when a permitted preview or audio source is configured, but any broader product path should only populate embeddings from audio sources with explicit rights.
+
+Current provider decision:
+
+- Spotify remains usable for playlist sync, metadata, and playback, but not audio or ML ingestion.
+- Apple/iTunes should not be the default preview resolver: iTunes Search lacks documented ISRC lookup, and Apple Music's ISRC path requires developer tokens.
+- Deezer is technically low-friction and strong for ISRC-to-preview matching, but terms make it a risky local prototype path and not a product default.
+- Apify's Apple Music actor is not a clean workaround because it documents search terms, start URLs, and Apple IDs, not direct ISRC lookup or preview/audio output, and requires an Apify token plus usage-based billing.
+- Production mainstream-catalog embeddings require explicit licensing terms from a commercial provider.
 
 ## Licensing research summary
 
@@ -52,13 +60,13 @@ Spotify defines Spotify Content broadly: sound recordings, metadata, playlists, 
 
 URL: https://developer.apple.com/documentation/applemusicapi/
 
-Apple Music API supports catalog data, library data, recommendations, playback history, and previews. It exposes preview objects, but does not grant clear rights for ML analysis or embedding storage. Useful for metadata and playback, not a confirmed embedding source.
+Apple Music API supports catalog data, library data, recommendations, playback history, ISRC filtering, and previews. It exposes preview objects, but does not grant clear rights for ML analysis or embedding storage. It also requires Apple developer tokens, which makes it a poor default for a local-first app aimed at normal end users.
 
 ### Apple Music API Preview object
 
 URL: https://developer.apple.com/documentation/applemusicapi/preview
 
-Apple exposes preview `url` and `hlsUrl`. For the v1 local non-commercial prototype, Apple/iTunes preview URLs are the preferred practical audio source for MuQ-MuLan embeddings because they can be resolved from Spotify tracks through ISRC matching and are technically downloadable. This does not prove Apple grants commercial rights to analyze previews or store derived embeddings.
+Apple exposes preview `url` and `hlsUrl`. These previews are technically useful, but they are not an approved default embedding source because MusicKit/Apple Music access is token-gated and does not clearly permit local audio analysis or derived embedding storage.
 
 ### MusicKit
 
@@ -76,13 +84,19 @@ MusicKit Content cannot be downloaded, uploaded, or modified unless Apple permit
 
 URL: https://performance-partners.apple.com/search-api
 
-The iTunes Search API exposes `previewUrl`, a 30-second preview file. V1 can use this as the prototype embedding source after resolving Spotify tracks by ISRC. Treat this as a local non-commercial prototype assumption, not a clean commercial licensing path.
+The iTunes Search API exposes `previewUrl`, a 30-second preview file, but it does not document ISRC lookup support. Live `lookup?isrc=...` checks returned zero results, so it is not viable as the ISRC-based preview resolver.
+
+### Apify Apple Music actor
+
+URL: https://apify.com/jupri/apple-music
+
+The `jupri/apple-music` actor accepts search queries, start URLs, Apple Music IDs, and AQL-style commands such as `song:<id>`. Its input schema does not document an ISRC field, and the README's output sample is a placeholder rather than evidence of preview/audio URLs. It is community maintained, requires an Apify account token for API use, and costs $5 per 1,000 results. Not a default preview provider.
 
 ### Deezer API Terms
 
 URL: https://developers.deezer.com/termsofuse
 
-Deezer exposes 30-second previews and ISRCs, but terms are non-commercial and do not clearly permit ML analysis or embedding storage. Not viable for product use.
+Deezer exposes 30-second previews and has a working unauthenticated `track/isrc:<ISRC>` path in practice. This is low-friction technically. Use the community-observed `50 requests / 5 seconds / IP` threshold as the practical rate limit unless better evidence appears. The concern is policy, not mechanics: terms are non-commercial and prohibit bypassing protections to download content. It is technically promising for a local prototype, but not viable for product use without explicit permission.
 
 ### Deezer Developer FAQ
 

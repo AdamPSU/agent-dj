@@ -21,6 +21,7 @@ class CatalogStatus:
     track_count: int
     embedding_count: int
     preview_match_count: int = 0
+    preview_pending_count: int | None = None
 
     @property
     def needs_spotify_index(self) -> bool:
@@ -29,8 +30,8 @@ class CatalogStatus:
 
     @property
     def needs_preview_resolution(self) -> bool:
-        """Return whether indexed tracks still need Apple/iTunes preview matching."""
-        return self.track_count > 0 and self.preview_match_count == 0 and self.embedding_count == 0
+        """Return whether indexed tracks still need preview matching."""
+        return self.track_count > 0 and self._preview_pending_count() > 0 and self.embedding_count == 0
 
     @property
     def needs_embeddings(self) -> bool:
@@ -53,6 +54,7 @@ class CatalogStatus:
             "source_count": self.source_count,
             "track_count": self.track_count,
             "preview_match_count": self.preview_match_count,
+            "preview_pending_count": self._preview_pending_count(),
             "embedding_count": self.embedding_count,
             "needs_spotify_index": self.needs_spotify_index,
             "needs_preview_resolution": self.needs_preview_resolution,
@@ -60,6 +62,19 @@ class CatalogStatus:
             "ready_for_audio_similarity": self.ready_for_audio_similarity,
             "needs_onboarding": self.needs_onboarding,
         }
+
+    def _preview_pending_count(self) -> int:
+        if self.preview_pending_count is not None:
+            return self.preview_pending_count
+        return max(self.track_count - self.preview_match_count, 0)
+
+
+@dataclass(frozen=True)
+class TrackPreviewCandidate:
+    """Track row that still needs preview resolution."""
+
+    track_id: int
+    isrc: str | None
 
 
 def connect(database_file: Path) -> sqlite3.Connection:
@@ -154,6 +169,7 @@ def get_catalog_status(db: sqlite3.Connection) -> CatalogStatus:
         source_count=_count(db, "sources"),
         track_count=_count(db, "tracks"),
         preview_match_count=_count(db, "preview_matches"),
+        preview_pending_count=_preview_pending_count(db),
         embedding_count=_count(db, "track_embeddings"),
     )
 
@@ -259,6 +275,93 @@ def replace_source_tracks(
     )
 
 
+def fetch_tracks_needing_preview_resolution(
+    db: sqlite3.Connection,
+    *,
+    limit: int | None = None,
+) -> list[TrackPreviewCandidate]:
+    """Return tracks without a cached preview-match row."""
+    query = """
+        SELECT tracks.id, tracks.isrc
+        FROM tracks
+        LEFT JOIN preview_matches ON preview_matches.track_id = tracks.id
+        WHERE preview_matches.id IS NULL
+        ORDER BY tracks.id
+    """
+    params: tuple[int, ...] = ()
+    if limit is not None:
+        query += " LIMIT ?"
+        params = (limit,)
+    rows = db.execute(query, params).fetchall()
+    return [
+        TrackPreviewCandidate(
+            track_id=int(row["id"]),
+            isrc=row["isrc"] if isinstance(row["isrc"], str) and row["isrc"] else None,
+        )
+        for row in rows
+    ]
+
+
+def upsert_preview_match(
+    db: sqlite3.Connection,
+    *,
+    track_id: int,
+    provider: str,
+    provider_track_id: str | None,
+    preview_url: str | None,
+    match_method: str,
+    confidence: float,
+    status: str,
+    failure_reason: str | None,
+) -> None:
+    """Insert or update a preview resolution result for a track."""
+    db.execute(
+        """
+        INSERT INTO preview_matches (
+          track_id,
+          provider,
+          provider_track_id,
+          preview_url,
+          match_method,
+          confidence,
+          status,
+          failure_reason
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(track_id) DO UPDATE SET
+          provider = excluded.provider,
+          provider_track_id = excluded.provider_track_id,
+          preview_url = excluded.preview_url,
+          match_method = excluded.match_method,
+          confidence = excluded.confidence,
+          status = excluded.status,
+          failure_reason = excluded.failure_reason,
+          resolved_at = CURRENT_TIMESTAMP
+        """,
+        (
+            track_id,
+            provider,
+            provider_track_id,
+            preview_url,
+            match_method,
+            confidence,
+            status,
+            failure_reason,
+        ),
+    )
+
+
 def _count(db: sqlite3.Connection, table: str) -> int:
     row = db.execute(f"SELECT COUNT(*) AS count FROM {table}").fetchone()
+    return int(row["count"])
+
+
+def _preview_pending_count(db: sqlite3.Connection) -> int:
+    row = db.execute(
+        """
+        SELECT COUNT(*) AS count
+        FROM tracks
+        LEFT JOIN preview_matches ON preview_matches.track_id = tracks.id
+        WHERE preview_matches.id IS NULL
+        """
+    ).fetchone()
     return int(row["count"])
