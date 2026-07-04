@@ -6,14 +6,20 @@ This module will own session lifecycle, command handling, and the DJ loop.
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from collections.abc import Callable
+from datetime import UTC, datetime, timedelta
 import json
 import os
 import threading
 
-from claude_dj.config import ensure_app_dir, get_database_file, get_runtime_file, get_spotify_token_file
+from claude_dj.config import (
+    ensure_app_dir,
+    get_database_file,
+    get_embedding_config,
+    get_runtime_file,
+    get_spotify_token_file,
+)
 from claude_dj.audio.embeddings import EmbeddingGenerationSummary, generate_audio_embeddings
 from claude_dj.audio.previews import (
-    DEEZER_RATE_LIMIT_REQUESTS,
     PreviewResolutionSummary,
     resolve_deezer_previews,
 )
@@ -24,18 +30,20 @@ from claude_dj.indexing import (
     index_spotify_playlists,
 )
 from claude_dj.models import RuntimeInfo
+from claude_dj.recommendation.similarity import DJBlock, generate_next_dj_block
 from claude_dj.storage.db import CatalogStatus, connect, get_catalog_status, initialize_schema
 
 
 LOOPBACK_HOST = "127.0.0.1"
 MIN_READY_TRACKS = 30
-PREVIEW_RESOLUTION_BATCH_SIZE = DEEZER_RATE_LIMIT_REQUESTS
+TRACK_COOLDOWN = timedelta(hours=3)
 
 
 SpotifyIndexer = Callable[[], IndexSummary]
 PreviewResolver = Callable[[], PreviewResolutionSummary]
 EmbeddingGenerator = Callable[[], EmbeddingGenerationSummary]
 CatalogStepRunner = Callable[[], PreviewResolutionSummary | EmbeddingGenerationSummary]
+RecommendationGenerator = Callable[[set[int]], DJBlock | None]
 
 
 class DaemonState:
@@ -49,6 +57,7 @@ class DaemonState:
         spotify_indexer: SpotifyIndexer | None,
         preview_resolver: PreviewResolver | None,
         embedding_generator: EmbeddingGenerator | None,
+        recommendation_generator: RecommendationGenerator | None,
     ) -> None:
         self.host = host
         self.port = port
@@ -58,6 +67,8 @@ class DaemonState:
         self.spotify_indexer = spotify_indexer
         self.preview_resolver = preview_resolver
         self.embedding_generator = embedding_generator
+        self.recommendation_generator = recommendation_generator
+        self.track_last_played_at: dict[int, datetime] = {}
         self.sync_status = "idle"
         self.sync_error: str | None = None
         self.sync_indexing: dict[str, dict[str, object]] = _empty_indexing_payload()
@@ -112,6 +123,10 @@ class DaemonRequestHandler(BaseHTTPRequestHandler):
             self._handle_sync_start()
             return
 
+        if self.path == "/recommendations/next":
+            self._handle_recommendations_next()
+            return
+
         if self.path == "/daemon/quit":
             self._send_json(200, {"ok": True, "message": "Claude DJ daemon stopped."})
             threading.Thread(target=self.server.shutdown, daemon=True).start()
@@ -128,13 +143,19 @@ class DaemonRequestHandler(BaseHTTPRequestHandler):
         self._start_sync_if_idle()
         self._wait_for_ready_tracks_or_sync_terminal()
         ready = self.server.state.catalog_status.ready_track_count >= MIN_READY_TRACKS
+        has_recommendation_generator = self.server.state.recommendation_generator is not None
+        recommendation = self._generate_recommendation() if ready and has_recommendation_generator else None
         self._send_json(
             200,
             {
-                "ok": ready,
+                "ok": ready and (recommendation is not None or not has_recommendation_generator),
                 "message": "Claude DJ session attached.",
                 "active_session_id": self.server.state.active_session_id,
-                "error_code": None if ready else "insufficient_ready_tracks",
+                "error_code": _session_start_error_code(
+                    ready,
+                    recommendation,
+                    has_recommendation_generator=has_recommendation_generator,
+                ),
                 "minimum_ready_tracks": MIN_READY_TRACKS,
                 "catalog": self.server.state.catalog_status.to_json(),
                 "indexing": self.server.state.sync_indexing,
@@ -144,6 +165,7 @@ class DaemonRequestHandler(BaseHTTPRequestHandler):
                     "embed_tracks": self.server.state.catalog_status.needs_embeddings,
                 },
                 "sync": self._sync_status_json(),
+                "recommendation": recommendation.to_json() if recommendation is not None else None,
             },
         )
 
@@ -156,6 +178,29 @@ class DaemonRequestHandler(BaseHTTPRequestHandler):
                 "message": "Storing your songs on device.",
                 "catalog": self.server.state.catalog_status.to_json(),
                 "sync": self._sync_status_json(),
+            },
+        )
+
+    def _handle_recommendations_next(self) -> None:
+        if self.server.state.catalog_status.ready_track_count < MIN_READY_TRACKS:
+            self._send_json(
+                200,
+                {
+                    "ok": False,
+                    "error_code": "insufficient_ready_tracks",
+                    "minimum_ready_tracks": MIN_READY_TRACKS,
+                    "catalog": self.server.state.catalog_status.to_json(),
+                },
+            )
+            return
+
+        recommendation = self._generate_recommendation()
+        self._send_json(
+            200,
+            {
+                "ok": recommendation is not None,
+                "error_code": None if recommendation is not None else "no_recommendation_available",
+                "recommendation": recommendation.to_json() if recommendation is not None else None,
             },
         )
 
@@ -261,6 +306,24 @@ class DaemonRequestHandler(BaseHTTPRequestHandler):
             payload["error"] = self.server.state.sync_error
         return payload
 
+    def _generate_recommendation(self) -> DJBlock | None:
+        generator = self.server.state.recommendation_generator
+        if generator is None:
+            return None
+
+        now = datetime.now(UTC)
+        with self.server.state.sync_condition:
+            recently_played = {
+                track_id
+                for track_id, played_at in self.server.state.track_last_played_at.items()
+                if now - played_at < TRACK_COOLDOWN
+            }
+            recommendation = generator(recently_played)
+            if recommendation is not None:
+                for track in recommendation.tracks:
+                    self.server.state.track_last_played_at[track.track_id] = now
+            return recommendation
+
     def _read_json_body(self) -> dict[str, object] | None:
         length = int(self.headers.get("Content-Length") or "0")
         raw_body = self.rfile.read(length) if length else b"{}"
@@ -287,6 +350,7 @@ def create_server(
     spotify_indexer: SpotifyIndexer | None = None,
     preview_resolver: PreviewResolver | None = None,
     embedding_generator: EmbeddingGenerator | None = None,
+    recommendation_generator: RecommendationGenerator | None = None,
 ) -> ClaudeDJHTTPServer:
     """Create a loopback-only local HTTP daemon server."""
     server = ClaudeDJHTTPServer((host, port), DaemonRequestHandler)
@@ -298,6 +362,7 @@ def create_server(
         spotify_indexer=spotify_indexer,
         preview_resolver=preview_resolver,
         embedding_generator=embedding_generator,
+        recommendation_generator=recommendation_generator,
     )
     return server
 
@@ -316,20 +381,86 @@ def _empty_indexing_payload() -> dict[str, dict[str, object]]:
     }
 
 
+def _session_start_error_code(
+    ready: bool,
+    recommendation: DJBlock | None,
+    *,
+    has_recommendation_generator: bool,
+) -> str | None:
+    if not ready:
+        return "insufficient_ready_tracks"
+    if has_recommendation_generator and recommendation is None:
+        return "no_recommendation_available"
+    return None
+
+
+def _initialize_embedding_schema(schema_db, embedding_config) -> None:
+    dimensions, model_name, model_version = _embedding_schema_metadata(schema_db, embedding_config)
+    initialize_schema(
+        schema_db,
+        dimensions=dimensions,
+        model_name=model_name,
+        model_version=model_version,
+    )
+
+
+def _embedding_schema_metadata(schema_db, embedding_config) -> tuple[int, str | None, str | None]:
+    if not _table_exists(schema_db, "track_embeddings"):
+        return embedding_config.dimensions, embedding_config.model_name, embedding_config.model_version
+
+    if _table_exists(schema_db, "embedding_metadata"):
+        metadata = schema_db.execute(
+            "SELECT model_name, model_version, dimensions FROM embedding_metadata ORDER BY track_id LIMIT 1"
+        ).fetchone()
+        if metadata is not None:
+            return int(metadata["dimensions"]), metadata["model_name"], metadata["model_version"]
+
+    dimensions = _embedding_table_dimensions(schema_db)
+    return dimensions or embedding_config.dimensions, None, None
+
+
+def _table_exists(schema_db, table_name: str) -> bool:
+    row = schema_db.execute(
+        "SELECT 1 FROM sqlite_master WHERE type IN ('table', 'virtual table') AND name = ?",
+        (table_name,),
+    ).fetchone()
+    return row is not None
+
+
+def _embedding_table_dimensions(schema_db) -> int | None:
+    row = schema_db.execute("SELECT sql FROM sqlite_master WHERE name = 'track_embeddings'").fetchone()
+    sql = str(row["sql"] or "") if row is not None else ""
+    marker = "FLOAT["
+    start = sql.find(marker)
+    if start == -1:
+        return None
+    end = sql.find("]", start + len(marker))
+    if end == -1:
+        return None
+    try:
+        return int(sql[start + len(marker) : end])
+    except ValueError:
+        return None
+
+
 def run_daemon() -> int:
     """Run the Claude DJ daemon until it is asked to quit."""
     app_dir = ensure_app_dir()
     runtime_file = get_runtime_file(app_dir)
     database_file = get_database_file(app_dir)
+    embedding_config = get_embedding_config()
     db = connect(database_file)
-    initialize_schema(db)
+    _initialize_embedding_schema(db, embedding_config)
     catalog_status = get_catalog_status(db)
     db.close()
+
+    def initialize_embedding_schema(schema_db):
+        _initialize_embedding_schema(schema_db, embedding_config)
 
     def spotify_indexer() -> IndexSummary:
         index_db = connect(database_file)
         try:
-            initialize_schema(index_db)
+            initialize_embedding_schema(index_db)
             return index_spotify_playlists(
                 index_db,
                 token_file=get_spotify_token_file(app_dir),
@@ -340,27 +471,36 @@ def run_daemon() -> int:
     def preview_resolver() -> PreviewResolutionSummary:
         preview_db = connect(database_file)
         try:
-            initialize_schema(preview_db)
-            return resolve_deezer_previews(
-                preview_db,
-                max_tracks=PREVIEW_RESOLUTION_BATCH_SIZE,
-            )
+            initialize_embedding_schema(preview_db)
+            return resolve_deezer_previews(preview_db)
         finally:
             preview_db.close()
 
     def embedding_generator() -> EmbeddingGenerationSummary:
         embedding_db = connect(database_file)
         try:
-            initialize_schema(embedding_db)
+            initialize_embedding_schema(embedding_db)
             return generate_audio_embeddings(embedding_db)
         finally:
             embedding_db.close()
+
+    def recommendation_generator(recently_played_track_ids: set[int]) -> DJBlock | None:
+        recommendation_db = connect(database_file)
+        try:
+            initialize_embedding_schema(recommendation_db)
+            return generate_next_dj_block(
+                recommendation_db,
+                recently_played_track_ids=recently_played_track_ids,
+            )
+        finally:
+            recommendation_db.close()
 
     server = create_server(
         catalog_status=catalog_status,
         spotify_indexer=spotify_indexer,
         preview_resolver=preview_resolver,
         embedding_generator=embedding_generator,
+        recommendation_generator=recommendation_generator,
     )
     host, port = server.server_address
     write_runtime_file(runtime_file, pid=os.getpid(), host=host, port=port)

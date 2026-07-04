@@ -81,7 +81,7 @@ The provider-gated embedding pipeline is:
 2. Extract each Spotify track's ISRC.
 3. Resolve the ISRC through the selected preview or audio provider.
 4. Fetch the permitted preview or audio URL for matched tracks.
-5. Generate a MuQ-MuLan embedding from the preview audio.
+5. Generate a MuQ embedding from the preview audio.
 6. Store the embedding and matching metadata locally.
 7. Use nearest-neighbor search over local embeddings to choose similar songs.
 

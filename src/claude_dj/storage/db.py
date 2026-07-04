@@ -96,6 +96,20 @@ class TrackEmbeddingCandidate:
     preview_url: str
 
 
+@dataclass(frozen=True)
+class PlaylistSourceCandidate:
+    """Playlist source that has embedded tracks available for DJ selection."""
+
+    source_id: int
+
+
+@dataclass(frozen=True)
+class EmbeddedTrackCandidate:
+    """Embedded track id available for DJ selection."""
+
+    track_id: int
+
+
 def connect(database_file: Path) -> sqlite3.Connection:
     """Open SQLite and load sqlite-vec for vector search."""
     database_file.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -108,9 +122,15 @@ def connect(database_file: Path) -> sqlite3.Connection:
     return db
 
 
-def initialize_schema(db: sqlite3.Connection, dimensions: int = EMBEDDING_DIMENSIONS) -> None:
+def initialize_schema(
+    db: sqlite3.Connection,
+    dimensions: int = EMBEDDING_DIMENSIONS,
+    *,
+    model_name: str | None = None,
+    model_version: str | None = None,
+) -> None:
     """Create the initial metadata and vector-search schema if needed."""
-    _drop_embedding_tables_if_dimension_mismatch(db, dimensions)
+    _drop_embedding_tables_if_incompatible(db, dimensions, model_name, model_version)
     _migrate_preview_matches_without_confidence(db)
     db.executescript(
         """
@@ -355,6 +375,60 @@ def fetch_tracks_needing_embeddings(
     ]
 
 
+def fetch_embedded_track_ids(db: sqlite3.Connection) -> set[int]:
+    """Return all tracks with locally stored audio embeddings."""
+    rows = db.execute("SELECT track_id FROM track_embeddings").fetchall()
+    return {int(row["track_id"]) for row in rows}
+
+
+def fetch_playlist_sources_with_embedded_tracks(
+    db: sqlite3.Connection,
+    *,
+    excluded_track_ids: set[int] | None = None,
+) -> list[PlaylistSourceCandidate]:
+    """Return playlist sources that can provide at least one embedded seed track."""
+    excluded = excluded_track_ids or set()
+    query = """
+        SELECT DISTINCT sources.id
+        FROM sources
+        JOIN source_tracks ON source_tracks.source_id = sources.id
+        JOIN track_embeddings ON track_embeddings.track_id = source_tracks.track_id
+        WHERE sources.source_type = 'spotify_playlist'
+    """
+    params: list[int] = []
+    if excluded:
+        placeholders = ", ".join("?" for _ in excluded)
+        query += f" AND source_tracks.track_id NOT IN ({placeholders})"
+        params.extend(sorted(excluded))
+    query += " ORDER BY sources.id"
+    rows = db.execute(query, params).fetchall()
+    return [PlaylistSourceCandidate(source_id=int(row["id"])) for row in rows]
+
+
+def fetch_embedded_tracks_for_source(
+    db: sqlite3.Connection,
+    *,
+    source_id: int,
+    excluded_track_ids: set[int] | None = None,
+) -> list[EmbeddedTrackCandidate]:
+    """Return embedded tracks that belong to one playlist source."""
+    excluded = excluded_track_ids or set()
+    query = """
+        SELECT source_tracks.track_id
+        FROM source_tracks
+        JOIN track_embeddings ON track_embeddings.track_id = source_tracks.track_id
+        WHERE source_tracks.source_id = ?
+    """
+    params: list[int] = [source_id]
+    if excluded:
+        placeholders = ", ".join("?" for _ in excluded)
+        query += f" AND source_tracks.track_id NOT IN ({placeholders})"
+        params.extend(sorted(excluded))
+    query += " ORDER BY source_tracks.position, source_tracks.track_id"
+    rows = db.execute(query, params).fetchall()
+    return [EmbeddedTrackCandidate(track_id=int(row["track_id"])) for row in rows]
+
+
 def upsert_track_embedding(
     db: sqlite3.Connection,
     *,
@@ -475,7 +549,12 @@ def _ready_track_count(db: sqlite3.Connection) -> int:
     return int(row["count"])
 
 
-def _drop_embedding_tables_if_dimension_mismatch(db: sqlite3.Connection, dimensions: int) -> None:
+def _drop_embedding_tables_if_incompatible(
+    db: sqlite3.Connection,
+    dimensions: int,
+    model_name: str | None,
+    model_version: str | None,
+) -> None:
     row = db.execute(
         "SELECT sql FROM sqlite_master WHERE name = 'track_embeddings'"
     ).fetchone()
@@ -483,9 +562,34 @@ def _drop_embedding_tables_if_dimension_mismatch(db: sqlite3.Connection, dimensi
         return
 
     sql = str(row["sql"] or "")
-    if f"FLOAT[{dimensions}]" in sql:
+    if f"FLOAT[{dimensions}]" not in sql:
+        _drop_embedding_tables(db)
         return
 
+    if model_name is None:
+        return
+
+    metadata_table = db.execute(
+        "SELECT 1 FROM sqlite_master WHERE name = 'embedding_metadata'"
+    ).fetchone()
+    if metadata_table is None:
+        _drop_embedding_tables(db)
+        return
+
+    rows = db.execute(
+        "SELECT model_name, model_version, dimensions FROM embedding_metadata"
+    ).fetchall()
+    for metadata in rows:
+        if (
+            metadata["model_name"] != model_name
+            or metadata["model_version"] != model_version
+            or int(metadata["dimensions"]) != dimensions
+        ):
+            _drop_embedding_tables(db)
+            return
+
+
+def _drop_embedding_tables(db: sqlite3.Connection) -> None:
     db.execute("DROP TABLE IF EXISTS track_embeddings")
     db.execute("DROP TABLE IF EXISTS embedding_metadata")
 

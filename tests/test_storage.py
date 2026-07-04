@@ -140,6 +140,48 @@ def test_initialize_schema_replaces_placeholder_embedding_dimensions(tmp_path) -
         db.close()
 
 
+def test_initialize_schema_replaces_incompatible_embedding_model_with_same_dimensions(tmp_path) -> None:
+    db = connect(tmp_path / "claude-dj.sqlite3")
+
+    try:
+        db.execute(
+            f"CREATE VIRTUAL TABLE track_embeddings USING vec0(track_id INTEGER PRIMARY KEY, embedding FLOAT[{EMBEDDING_DIMENSIONS}])"
+        )
+        db.execute(
+            """
+            CREATE TABLE embedding_metadata (
+              track_id INTEGER PRIMARY KEY,
+              model_name TEXT NOT NULL,
+              model_version TEXT,
+              dimensions INTEGER NOT NULL
+            )
+            """
+        )
+        db.execute(
+            "INSERT INTO track_embeddings (track_id, embedding) VALUES (?, ?)",
+            (1, vector([0.0] * EMBEDDING_DIMENSIONS)),
+        )
+        db.execute(
+            """
+            INSERT INTO embedding_metadata (track_id, model_name, model_version, dimensions)
+            VALUES (1, 'OpenMuQ/MuQ-large-msd-iter', NULL, ?)
+            """,
+            (EMBEDDING_DIMENSIONS,),
+        )
+
+        initialize_schema(
+            db,
+            dimensions=EMBEDDING_DIMENSIONS,
+            model_name="laion/clap-htsat-fused",
+            model_version=None,
+        )
+
+        assert db.execute("SELECT COUNT(*) FROM track_embeddings").fetchone()[0] == 0
+        assert db.execute("SELECT COUNT(*) FROM embedding_metadata").fetchone()[0] == 0
+    finally:
+        db.close()
+
+
 def test_catalog_status_reports_first_run_on_empty_database(tmp_path) -> None:
     db = connect(tmp_path / "claude-dj.sqlite3")
 
@@ -324,7 +366,7 @@ def test_catalog_status_counts_ready_tracks_with_embeddings(tmp_path) -> None:
             db,
             track_id=1,
             embedding=[0.25] * EMBEDDING_DIMENSIONS,
-            model_name="OpenMuQ/MuQ-MuLan-large",
+            model_name="OpenMuQ/MuQ-large-msd-iter",
             model_version=None,
             dimensions=EMBEDDING_DIMENSIONS,
         )
@@ -332,7 +374,7 @@ def test_catalog_status_counts_ready_tracks_with_embeddings(tmp_path) -> None:
             db,
             track_id=3,
             embedding=[0.75] * EMBEDDING_DIMENSIONS,
-            model_name="OpenMuQ/MuQ-MuLan-large",
+            model_name="OpenMuQ/MuQ-large-msd-iter",
             model_version=None,
             dimensions=EMBEDDING_DIMENSIONS,
         )
@@ -441,7 +483,7 @@ def test_upsert_track_embedding_stores_vector_and_metadata(tmp_path) -> None:
             db,
             track_id=track_id,
             embedding=[0.25] * EMBEDDING_DIMENSIONS,
-            model_name="OpenMuQ/MuQ-MuLan-large",
+            model_name="OpenMuQ/MuQ-large-msd-iter",
             model_version=None,
             dimensions=EMBEDDING_DIMENSIONS,
         )
@@ -455,7 +497,7 @@ def test_upsert_track_embedding_stores_vector_and_metadata(tmp_path) -> None:
         candidates = fetch_tracks_needing_embeddings(db)
 
         assert status.embedding_count == 1
-        assert metadata["model_name"] == "OpenMuQ/MuQ-MuLan-large"
+        assert metadata["model_name"] == "OpenMuQ/MuQ-large-msd-iter"
         assert metadata["model_version"] is None
         assert metadata["dimensions"] == EMBEDDING_DIMENSIONS
         assert candidates == []
@@ -523,7 +565,7 @@ def test_catalog_status_reports_embedding_pending_for_matched_previews_only(tmp_
             db,
             track_id=matched_track_id,
             embedding=[0.25] * EMBEDDING_DIMENSIONS,
-            model_name="OpenMuQ/MuQ-MuLan-large",
+            model_name="OpenMuQ/MuQ-large-msd-iter",
             model_version=None,
             dimensions=EMBEDDING_DIMENSIONS,
         )

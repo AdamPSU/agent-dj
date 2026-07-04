@@ -48,7 +48,7 @@ Current provider decision:
 
 URL: https://developer.spotify.com/policy
 
-Spotify explicitly blocks the embedding workflow. Policy says not to use Spotify Platform or Spotify Content to train a machine learning or AI model or otherwise ingest Spotify Content into a machine learning or AI model. Spotify previews are also restricted to promoting the underlying content, not personalization. Not usable for MuQ-MuLan embeddings.
+Spotify explicitly blocks the embedding workflow. Policy says not to use Spotify Platform or Spotify Content to train a machine learning or AI model or otherwise ingest Spotify Content into a machine learning or AI model. Spotify previews are also restricted to promoting the underlying content, not personalization. Not usable for MuQ embeddings.
 
 ### Spotify Developer Terms
 
@@ -132,7 +132,7 @@ Feed Clips provides licensed major-label clips, including a Warner Music Group p
 
 URL: https://www.feed.fm/clips-terms-conditions
 
-Explicitly prohibits caching or storing API Content except limited metadata caching, and prohibits using API Content with artificial intelligence. Not usable for MuQ-MuLan embeddings without separate written permission.
+Explicitly prohibits caching or storing API Content except limited metadata caching, and prohibits using API Content with artificial intelligence. Not usable for MuQ embeddings without separate written permission.
 
 ### Feed Originals
 
@@ -326,35 +326,23 @@ URL: https://github.com/tencent-ailab/MuQ
 
 Official implementation. Code MIT, weights CC-BY-NC 4.0. Good for experiments, not clean commercial default.
 
-### MuQ-MuLan Hugging Face
-
-URL: https://huggingface.co/OpenMuQ/MuQ-MuLan-large
-
-Shows separate audio and text embedding paths. It does not require both modalities at inference. Audio can be embedded alone, text can be embedded alone, and similarity can be computed between them. Weights are CC-BY-NC 4.0.
-
-### MuLan paper
-
-URL: https://arxiv.org/abs/2208.12415
-
-Background for joint music-audio/text embedding. Useful conceptually. Not the direct model we chose.
-
 ### CLAP paper
 
 URL: https://arxiv.org/abs/2206.04769
 
-Baseline audio-text embedding approach. Useful baseline, but not clearly best for music-specific retrieval versus MuQ or MuQ-MuLan.
+Baseline audio-text embedding approach. Useful background, but the implementation is MuQ-only for audio-to-audio similarity.
 
 ### 2026 pretrained audio representations for music recommender systems
 
 URL: https://arxiv.org/abs/2604.23077
 
-Compared MusicFM, Music2Vec, MERT, EncodecMAE, Jukebox, MusiCNN, MULE, MuQ, and MuQ-MuLan for recommender systems. Found MuQ and MuQ-MuLan consistently promising, but no single model wins everywhere.
+Compared MusicFM, Music2Vec, MERT, EncodecMAE, Jukebox, MusiCNN, MULE, MuQ, and joint audio-text baselines for recommender systems. Found MuQ consistently promising, but no single model wins everywhere.
 
 ### 2026 perceptual music similarity with pretrained embeddings
 
 URL: https://arxiv.org/abs/2601.19109
 
-Found CLAP and MuQ-MuLan are strong baselines for perceptual music similarity. Also suggested source-separated, instrument-weighted similarity can improve alignment with human judgment. Good future research, not MVP.
+Found audio-text and audio-only pretrained embeddings are strong baselines for perceptual music similarity. Also suggested source-separated, instrument-weighted similarity can improve alignment with human judgment. Good future research, not MVP.
 
 ### 2024 CLAP embeddings for recommender tasks
 

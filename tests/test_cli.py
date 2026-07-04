@@ -189,8 +189,8 @@ def test_start_prints_embedding_generation_summary(monkeypatch) -> None:
             "previews": {"ran": False},
             "embeddings": {
                 "ran": True,
-                "model": "OpenMuQ/MuQ-MuLan-large",
-                "dimensions": 512,
+                "model": "OpenMuQ/MuQ-large-msd-iter",
+                "dimensions": 1024,
                 "embedded_count": 2,
                 "failed_count": 1,
             },

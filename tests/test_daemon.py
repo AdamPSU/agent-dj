@@ -8,23 +8,70 @@ import urllib.request
 
 import pytest
 
-from claude_dj.daemon import MIN_READY_TRACKS, PREVIEW_RESOLUTION_BATCH_SIZE, create_server, write_runtime_file
+from claude_dj.daemon import MIN_READY_TRACKS, create_server, write_runtime_file
 from claude_dj.audio.embeddings import EmbeddingGenerationSummary
+from claude_dj.config import LOCAL_MUQ_DIMENSIONS, LOCAL_MUQ_MODEL_NAME
 from claude_dj.audio.previews import PreviewResolutionSummary
 from claude_dj.indexing import (
     IndexSummary,
     SpotifyIndexingAccessDenied,
     SpotifyIndexingAuthRequired,
 )
-from claude_dj.storage.db import CatalogStatus
-
-
-def test_preview_resolution_batch_fits_one_deezer_rate_limit_window() -> None:
-    assert PREVIEW_RESOLUTION_BATCH_SIZE == 50
+import claude_dj.daemon as daemon_module
+from claude_dj.recommendation.similarity import DJBlock, DJTrack
+from claude_dj.storage.db import CatalogStatus, connect, initialize_schema, upsert_track, upsert_track_embedding
+from claude_dj.config import get_embedding_config, LOCAL_CLAP_DIMENSIONS, LOCAL_CLAP_MODEL_NAME
 
 
 def test_min_ready_tracks_for_dj_start_is_30() -> None:
     assert MIN_READY_TRACKS == 30
+
+
+def test_daemon_schema_initialization_preserves_fallback_embedding_model(tmp_path) -> None:
+    assert hasattr(daemon_module, "_initialize_embedding_schema")
+    db = connect(tmp_path / "claude-dj.sqlite3")
+
+    try:
+        initialize_schema(
+            db,
+            dimensions=LOCAL_CLAP_DIMENSIONS,
+            model_name=LOCAL_CLAP_MODEL_NAME,
+            model_version=None,
+        )
+        track_id = upsert_track(
+            db,
+            spotify_track_id="spotify-track-1",
+            spotify_uri="spotify:track:1",
+            isrc="US123",
+            title="Fallback Track",
+            artist_name="Artist",
+            album_name=None,
+            duration_ms=None,
+            explicit=False,
+            popularity=None,
+        )
+        upsert_track_embedding(
+            db,
+            track_id=track_id,
+            embedding=[1.0] + [0.0] * (LOCAL_CLAP_DIMENSIONS - 1),
+            model_name=LOCAL_CLAP_MODEL_NAME,
+            model_version=None,
+            dimensions=LOCAL_CLAP_DIMENSIONS,
+        )
+        db.commit()
+
+        daemon_module._initialize_embedding_schema(db, get_embedding_config())
+
+        schema = db.execute("SELECT sql FROM sqlite_master WHERE name = 'track_embeddings'").fetchone()
+        metadata = db.execute("SELECT model_name, dimensions FROM embedding_metadata").fetchone()
+        embedding_count = db.execute("SELECT COUNT(*) AS count FROM track_embeddings").fetchone()
+
+        assert f"FLOAT[{LOCAL_CLAP_DIMENSIONS}]" in schema["sql"]
+        assert metadata["model_name"] == LOCAL_CLAP_MODEL_NAME
+        assert metadata["dimensions"] == LOCAL_CLAP_DIMENSIONS
+        assert embedding_count["count"] == 1
+    finally:
+        db.close()
 
 
 def start_test_server():
@@ -193,6 +240,104 @@ def test_session_start_with_enough_ready_tracks_starts_sync_without_waiting() ->
         assert calls == [True]
     finally:
         release.set()
+        stop_test_server(server, thread)
+
+
+def test_session_start_returns_first_recommendation_when_ready() -> None:
+    def fake_recommender(recently_played_track_ids: set[int]) -> DJBlock:
+        assert recently_played_track_ids == set()
+        return DJBlock(
+            source_id=10,
+            seed_track_id=1,
+            tracks=(
+                DJTrack(track_id=1, role="seed", distance=None),
+                DJTrack(track_id=2, role="similar", distance=0.1),
+                DJTrack(track_id=3, role="similar", distance=0.2),
+            ),
+        )
+
+    server = create_server(
+        catalog_status=CatalogStatus(
+            source_count=1,
+            track_count=MIN_READY_TRACKS,
+            embedding_count=MIN_READY_TRACKS,
+            ready_track_count=MIN_READY_TRACKS,
+        ),
+        recommendation_generator=fake_recommender,
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+
+    try:
+        host, port = server.server_address
+
+        response = json_request(
+            "POST",
+            f"http://{host}:{port}/session/start",
+            {"session_id": "test-session"},
+        )
+
+        assert response["ok"] is True
+        assert response["recommendation"] == {
+            "source_id": 10,
+            "seed_track_id": 1,
+            "tracks": [
+                {"track_id": 1, "role": "seed", "distance": None},
+                {"track_id": 2, "role": "similar", "distance": 0.1},
+                {"track_id": 3, "role": "similar", "distance": 0.2},
+            ],
+        }
+    finally:
+        stop_test_server(server, thread)
+
+
+def test_recommendations_next_uses_in_memory_cooldown() -> None:
+    calls = []
+
+    def fake_recommender(recently_played_track_ids: set[int]) -> DJBlock:
+        calls.append(set(recently_played_track_ids))
+        if not recently_played_track_ids:
+            return DJBlock(
+                source_id=10,
+                seed_track_id=1,
+                tracks=(
+                    DJTrack(track_id=1, role="seed", distance=None),
+                    DJTrack(track_id=2, role="similar", distance=0.1),
+                    DJTrack(track_id=3, role="similar", distance=0.2),
+                ),
+            )
+        return DJBlock(
+            source_id=11,
+            seed_track_id=4,
+            tracks=(
+                DJTrack(track_id=4, role="seed", distance=None),
+                DJTrack(track_id=5, role="similar", distance=0.1),
+                DJTrack(track_id=6, role="similar", distance=0.2),
+            ),
+        )
+
+    server = create_server(
+        catalog_status=CatalogStatus(
+            source_count=1,
+            track_count=MIN_READY_TRACKS,
+            embedding_count=MIN_READY_TRACKS,
+            ready_track_count=MIN_READY_TRACKS,
+        ),
+        recommendation_generator=fake_recommender,
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+
+    try:
+        host, port = server.server_address
+
+        first = json_request("POST", f"http://{host}:{port}/recommendations/next", {})
+        second = json_request("POST", f"http://{host}:{port}/recommendations/next", {})
+
+        assert first["recommendation"]["seed_track_id"] == 1
+        assert second["recommendation"]["seed_track_id"] == 4
+        assert calls == [set(), {1, 2, 3}]
+    finally:
         stop_test_server(server, thread)
 
 
@@ -414,6 +559,8 @@ def test_session_start_generates_embeddings_after_preview_resolution() -> None:
                 preview_pending_count=0,
                 embedding_pending_count=0,
             ),
+            model_name=LOCAL_MUQ_MODEL_NAME,
+            dimensions=LOCAL_MUQ_DIMENSIONS,
             embedded_count=2,
         )
 
@@ -444,8 +591,8 @@ def test_session_start_generates_embeddings_after_preview_resolution() -> None:
         assert response["catalog"]["embedding_count"] == 2
         assert response["indexing"]["embeddings"] == {
             "ran": True,
-            "model": "OpenMuQ/MuQ-MuLan-large",
-            "dimensions": 512,
+            "model": LOCAL_MUQ_MODEL_NAME,
+            "dimensions": LOCAL_MUQ_DIMENSIONS,
             "embedded_count": 2,
             "failed_count": 0,
         }

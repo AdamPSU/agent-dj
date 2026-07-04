@@ -1,161 +1,352 @@
-"""Audio embedding generation for Claude DJ.
+"""Audio embedding generation for Claude DJ."""
 
-This module will own MuQ-MuLan loading and preview-audio-to-vector generation.
-"""
-
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 import http.client
 import math
 from pathlib import Path
 import sqlite3
 import tempfile
+import time
 import urllib.request
 
 import librosa
 import numpy as np
-import torch
-from muq import MuQMuLan
 
+from claude_dj.config import EmbeddingConfig, get_embedding_config
 from claude_dj.storage.db import (
-    EMBEDDING_DIMENSIONS,
     CatalogStatus,
     TrackEmbeddingCandidate,
     fetch_tracks_needing_embeddings,
     get_catalog_status,
+    initialize_schema,
     upsert_track_embedding,
 )
 
 
-MUQ_MULAN_MODEL_NAME = "OpenMuQ/MuQ-MuLan-large"
-MUQ_MULAN_MODEL_VERSION = None
-MUQ_MULAN_SAMPLE_RATE = 24_000
+MUQ_SAMPLE_RATE = 24_000
+CLAP_SAMPLE_RATE = 48_000
 MAX_PREVIEW_BYTES = 10 * 1024 * 1024
-PREVIEW_DOWNLOAD_WORKERS = 4
 REQUEST_TIMEOUT_SECONDS = 10
+PREVIEW_REQUEST_HEADERS = {"User-Agent": "Mozilla/5.0 Claude-DJ/0.1"}
 
 
 class PreviewEmbeddingError(RuntimeError):
     """Expected per-preview failure while generating an audio embedding."""
 
 
+class EmbeddingModelError(PreviewEmbeddingError):
+    """Embedding model initialization or inference failure."""
+
+
 @dataclass(frozen=True)
 class EmbeddingGenerationSummary:
-    """Summary of a local audio embedding generation pass."""
+    """Summary of an audio embedding generation pass."""
 
     catalog_status: CatalogStatus
+    model_name: str
+    dimensions: int
     embedded_count: int = 0
     failed_count: int = 0
+    timing: dict[str, float] | None = None
 
-    def to_json(self) -> dict[str, int | bool | str]:
+    def to_json(self) -> dict[str, int | bool | str | dict[str, float]]:
         """Serialize embedding-generation status for daemon responses."""
-        return {
+        payload: dict[str, int | bool | str | dict[str, float]] = {
             "ran": self.embedded_count > 0 or self.failed_count > 0,
-            "model": MUQ_MULAN_MODEL_NAME,
-            "dimensions": EMBEDDING_DIMENSIONS,
+            "model": self.model_name,
+            "dimensions": self.dimensions,
             "embedded_count": self.embedded_count,
             "failed_count": self.failed_count,
         }
+        if self.timing is not None:
+            payload["timing"] = self.timing
+        return payload
+
+
+class PreviewEmbedder:
+    """Interface implemented by embedding providers."""
+
+    model_name: str
+    model_version: str | None
+    dimensions: int
+
+    def embed(self, candidate: TrackEmbeddingCandidate) -> list[float]:
+        raise NotImplementedError
 
 
 def generate_audio_embeddings(
     db: sqlite3.Connection,
     *,
-    max_tracks: int | None = None,
-    preview_download_workers: int = PREVIEW_DOWNLOAD_WORKERS,
-    urlopen=urllib.request.urlopen,
+    embedder: PreviewEmbedder | None = None,
 ) -> EmbeddingGenerationSummary:
-    """Generate MuQ-MuLan embeddings for matched Deezer preview URLs."""
-    candidates = fetch_tracks_needing_embeddings(db, limit=max_tracks)
+    """Generate embeddings for matched Deezer preview URLs."""
+    resolved_embedder = embedder or create_preview_embedder(get_embedding_config())
+    candidates = fetch_tracks_needing_embeddings(db)
     if not candidates:
-        return EmbeddingGenerationSummary(catalog_status=get_catalog_status(db))
+        return EmbeddingGenerationSummary(
+            catalog_status=get_catalog_status(db),
+            model_name=resolved_embedder.model_name,
+            dimensions=resolved_embedder.dimensions,
+        )
 
-    model = _load_model()
     embedded_count = 0
     failed_count = 0
-    workers = max(preview_download_workers, 1)
+    active_model: tuple[str, str | None, int] | None = None
 
-    with ThreadPoolExecutor(max_workers=workers) as executor:
-        for batch in _batches(candidates, workers):
-            decoded_previews = list(
-                executor.map(
-                    lambda candidate: _decode_candidate_preview(candidate, urlopen=urlopen),
-                    batch,
-                )
+    for candidate in candidates:
+        try:
+            embedding = resolved_embedder.embed(candidate)
+        except PreviewEmbeddingError:
+            failed_count += 1
+            continue
+
+        model_key = (
+            resolved_embedder.model_name,
+            resolved_embedder.model_version,
+            resolved_embedder.dimensions,
+        )
+        if model_key != active_model:
+            if active_model is not None:
+                embedded_count = 0
+            initialize_schema(
+                db,
+                dimensions=resolved_embedder.dimensions,
+                model_name=resolved_embedder.model_name,
+                model_version=resolved_embedder.model_version,
             )
-            for decoded_preview in decoded_previews:
-                if decoded_preview.error is not None:
-                    failed_count += 1
-                    continue
+            active_model = model_key
 
-                try:
-                    embedding = _embed_waveform(model, decoded_preview.waveform)
-                except PreviewEmbeddingError:
-                    failed_count += 1
-                    continue
-
-                upsert_track_embedding(
-                    db,
-                    track_id=decoded_preview.track_id,
-                    embedding=embedding,
-                    model_name=MUQ_MULAN_MODEL_NAME,
-                    model_version=MUQ_MULAN_MODEL_VERSION,
-                    dimensions=EMBEDDING_DIMENSIONS,
-                )
-                embedded_count += 1
+        if not _valid_embedding(embedding, resolved_embedder.dimensions):
+            failed_count += 1
+            continue
+        upsert_track_embedding(
+            db,
+            track_id=candidate.track_id,
+            embedding=embedding,
+            model_name=resolved_embedder.model_name,
+            model_version=resolved_embedder.model_version,
+            dimensions=resolved_embedder.dimensions,
+        )
+        embedded_count += 1
 
     db.commit()
     return EmbeddingGenerationSummary(
         catalog_status=get_catalog_status(db),
+        model_name=resolved_embedder.model_name,
+        dimensions=resolved_embedder.dimensions,
         embedded_count=embedded_count,
         failed_count=failed_count,
+        timing=_embedder_timing(resolved_embedder),
     )
 
 
-@dataclass(frozen=True)
-class DecodedPreview:
-    """Decoded preview audio ready for single-worker model inference."""
-
-    track_id: int
-    waveform: np.ndarray
-    error: PreviewEmbeddingError | None = None
-
-
-def _decode_candidate_preview(
-    candidate: TrackEmbeddingCandidate,
-    *,
-    urlopen,
-) -> DecodedPreview:
-    try:
-        preview_bytes = _download_preview_bytes(candidate.preview_url, urlopen=urlopen)
-        waveform = _decode_preview_bytes(preview_bytes)
-    except PreviewEmbeddingError as exc:
-        return DecodedPreview(track_id=candidate.track_id, waveform=np.array([], dtype=np.float32), error=exc)
-    return DecodedPreview(track_id=candidate.track_id, waveform=waveform)
+def create_preview_embedder(config: EmbeddingConfig) -> PreviewEmbedder:
+    """Create the configured embedding provider."""
+    primary = LocalMuQEmbedder(
+        model_name=config.model_name,
+        model_version=config.model_version,
+        dimensions=config.dimensions,
+    )
+    fallback = LocalClapEmbedder(
+        model_name=config.fallback_model_name or config.model_name,
+        model_version=config.fallback_model_version,
+        dimensions=config.fallback_dimensions or config.dimensions,
+    )
+    return FallbackPreviewEmbedder(primary=primary, fallback=fallback)
 
 
-def _batches(candidates: list[TrackEmbeddingCandidate], size: int):
-    for index in range(0, len(candidates), size):
-        yield candidates[index : index + size]
+class FallbackPreviewEmbedder(PreviewEmbedder):
+    """Try a primary local model, then stick to the fallback if the model fails."""
+
+    def __init__(self, *, primary: PreviewEmbedder, fallback: PreviewEmbedder) -> None:
+        self._primary = primary
+        self._fallback = fallback
+        self._active = primary
+
+    @property
+    def model_name(self) -> str:
+        return self._active.model_name
+
+    @property
+    def model_version(self) -> str | None:
+        return self._active.model_version
+
+    @property
+    def dimensions(self) -> int:
+        return self._active.dimensions
+
+    @property
+    def last_timing(self) -> dict[str, float] | None:
+        timing = getattr(self._active, "last_timing", None)
+        return timing if isinstance(timing, dict) else None
+
+    def embed(self, candidate: TrackEmbeddingCandidate) -> list[float]:
+        try:
+            return self._active.embed(candidate)
+        except EmbeddingModelError:
+            if self._active is self._fallback:
+                raise
+            embedding = self._fallback.embed(candidate)
+            self._active = self._fallback
+            return embedding
 
 
-def _load_model() -> MuQMuLan:
-    device = _select_device()
-    model = MuQMuLan.from_pretrained(MUQ_MULAN_MODEL_NAME)
-    return model.to(device).float().eval()
+class LocalMuQEmbedder(PreviewEmbedder):
+    """Local MuQ audio embedder."""
+
+    def __init__(
+        self,
+        *,
+        model_name: str,
+        model_version: str | None,
+        dimensions: int,
+        urlopen=urllib.request.urlopen,
+    ) -> None:
+        self.model_name = model_name
+        self.model_version = model_version
+        self.dimensions = dimensions
+        self.urlopen = urlopen
+        self._model = None
+        self._device: str | None = None
+        self._model_load_seconds: float | None = None
+        self.last_timing: dict[str, float] | None = None
+
+    def embed(self, candidate: TrackEmbeddingCandidate) -> list[float]:
+        waveform = _decode_preview_bytes(
+            _download_preview_bytes(candidate.preview_url, urlopen=self.urlopen),
+            sample_rate=MUQ_SAMPLE_RATE,
+        )
+        return self._embed_waveform(waveform)
+
+    def _embed_waveform(self, waveform: np.ndarray) -> list[float]:
+        import torch
+
+        model, device = self._load_model()
+        inference_started_at = time.perf_counter()
+        try:
+            wavs = torch.from_numpy(waveform).unsqueeze(0).to(device)
+            with torch.no_grad():
+                output = model(wavs, output_hidden_states=False)
+                embedding_tensor = output.last_hidden_state.mean(dim=1).squeeze(0)
+                embedding_tensor = torch.nn.functional.normalize(embedding_tensor, p=2.0, dim=0)
+                embedding_tensor = embedding_tensor.detach().cpu().float()
+        except (RuntimeError, ValueError) as exc:
+            raise EmbeddingModelError("Could not generate MuQ embedding.") from exc
+        inference_seconds = time.perf_counter() - inference_started_at
+        self.last_timing = {"inference_seconds": inference_seconds}
+        if self._model_load_seconds is not None:
+            self.last_timing["model_load_seconds"] = self._model_load_seconds
+        return embedding_tensor.tolist()
+
+    def _load_model(self):
+        if self._model is not None and self._device is not None:
+            return self._model, self._device
+
+        import torch
+
+        started_at = time.perf_counter()
+        try:
+            _install_muq_audio_only_xclip_stub()
+            from muq.muq import MuQ
+
+            self._device = _select_torch_device(torch)
+            self._model = MuQ.from_pretrained(self.model_name).to(self._device).float().eval()
+        except (ImportError, OSError, RuntimeError, ValueError) as exc:
+            raise EmbeddingModelError("Could not initialize MuQ embedding model.") from exc
+        self._model_load_seconds = time.perf_counter() - started_at
+        return self._model, self._device
 
 
-def _select_device() -> str:
-    if torch.cuda.is_available():
+class LocalClapEmbedder(PreviewEmbedder):
+    """Local LAION CLAP audio embedder."""
+
+    def __init__(
+        self,
+        *,
+        model_name: str,
+        model_version: str | None,
+        dimensions: int,
+        urlopen=urllib.request.urlopen,
+    ) -> None:
+        self.model_name = model_name
+        self.model_version = model_version
+        self.dimensions = dimensions
+        self.urlopen = urlopen
+        self._model = None
+        self._processor = None
+        self._device: str | None = None
+
+    def embed(self, candidate: TrackEmbeddingCandidate) -> list[float]:
+        waveform = _decode_preview_bytes(
+            _download_preview_bytes(candidate.preview_url, urlopen=self.urlopen),
+            sample_rate=CLAP_SAMPLE_RATE,
+        )
+        return self._embed_waveform(waveform)
+
+    def _embed_waveform(self, waveform: np.ndarray) -> list[float]:
+        import torch
+
+        model, processor, device = self._load_model()
+        try:
+            inputs = processor(audio=waveform, sampling_rate=CLAP_SAMPLE_RATE, return_tensors="pt")
+            inputs = {key: value.to(device) for key, value in inputs.items()}
+            with torch.no_grad():
+                audio_features = model.get_audio_features(**inputs)
+                embedding_tensor = audio_features.pooler_output.squeeze(0)
+                embedding_tensor = torch.nn.functional.normalize(embedding_tensor, p=2.0, dim=0)
+                embedding_tensor = embedding_tensor.detach().cpu().float()
+        except (RuntimeError, ValueError) as exc:
+            raise EmbeddingModelError("Could not generate CLAP embedding.") from exc
+        return embedding_tensor.tolist()
+
+    def _load_model(self):
+        if self._model is not None and self._processor is not None and self._device is not None:
+            return self._model, self._processor, self._device
+
+        try:
+            import torch
+            from transformers import ClapModel, ClapProcessor
+
+            self._device = _select_torch_device(torch)
+            self._processor = ClapProcessor.from_pretrained(self.model_name)
+            self._model = ClapModel.from_pretrained(self.model_name).to(self._device).eval()
+        except (ImportError, OSError, RuntimeError, ValueError) as exc:
+            raise EmbeddingModelError("Could not initialize CLAP embedding model.") from exc
+        return self._model, self._processor, self._device
+
+
+def _select_torch_device(torch_module) -> str:
+    if torch_module.cuda.is_available():
         return "cuda"
-    mps_backend = getattr(torch.backends, "mps", None)
+    mps_backend = getattr(torch_module.backends, "mps", None)
     if mps_backend is not None and mps_backend.is_available():
         return "mps"
     return "cpu"
 
 
+def _install_muq_audio_only_xclip_stub() -> None:
+    import importlib.machinery
+    import sys
+    import types
+
+    class _UnusedXClipTokenizer:
+        vocab_size = 49_408
+
+        def tokenize(self, _raw_texts):
+            raise RuntimeError("Text tokenization is not available in the MuQ audio embedder.")
+
+    x_clip = types.ModuleType("x_clip")
+    x_clip_tokenizer = types.ModuleType("x_clip.tokenizer")
+    x_clip.__spec__ = importlib.machinery.ModuleSpec("x_clip", loader=None, is_package=True)
+    x_clip.__path__ = []
+    x_clip_tokenizer.__spec__ = importlib.machinery.ModuleSpec("x_clip.tokenizer", loader=None)
+    x_clip_tokenizer.tokenizer = _UnusedXClipTokenizer()
+    sys.modules["x_clip"] = x_clip
+    sys.modules["x_clip.tokenizer"] = x_clip_tokenizer
+
+
 def _download_preview_bytes(preview_url: str, *, urlopen) -> bytes:
-    request = urllib.request.Request(preview_url, method="GET")
+    request = urllib.request.Request(preview_url, headers=PREVIEW_REQUEST_HEADERS, method="GET")
     try:
         with urlopen(request, timeout=REQUEST_TIMEOUT_SECONDS) as response:
             preview_bytes = response.read(MAX_PREVIEW_BYTES + 1)
@@ -168,37 +359,23 @@ def _download_preview_bytes(preview_url: str, *, urlopen) -> bytes:
     return preview_bytes
 
 
-def _decode_preview_bytes(preview_bytes: bytes) -> np.ndarray:
+def _decode_preview_bytes(preview_bytes: bytes, *, sample_rate: int) -> np.ndarray:
     with tempfile.TemporaryDirectory() as temp_dir:
         temp_path = Path(temp_dir) / "preview.mp3"
         temp_path.write_bytes(preview_bytes)
         try:
-            waveform, _sample_rate = librosa.load(
-                temp_path,
-                sr=MUQ_MULAN_SAMPLE_RATE,
-                mono=True,
-            )
+            waveform, _sample_rate = librosa.load(temp_path, sr=sample_rate, mono=True)
         except Exception as exc:
-            # librosa delegates to multiple audio backends with inconsistent error types.
             raise PreviewEmbeddingError("Could not decode preview audio.") from exc
     if waveform.size == 0:
         raise PreviewEmbeddingError("Preview audio decoded to an empty waveform.")
     return waveform.astype(np.float32, copy=False)
 
 
-def _embed_waveform(model: MuQMuLan, waveform: np.ndarray) -> list[float]:
-    device = next(model.parameters()).device
-    wavs = torch.from_numpy(waveform).unsqueeze(0).to(device)
-    try:
-        with torch.no_grad():
-            embedding_tensor = model(wavs=wavs).squeeze(0).detach().cpu().float()
-    except RuntimeError as exc:
-        raise PreviewEmbeddingError("Could not generate MuQ-MuLan embedding.") from exc
-    embedding = embedding_tensor.tolist()
-    if len(embedding) != EMBEDDING_DIMENSIONS:
-        raise PreviewEmbeddingError(
-            f"MuQ-MuLan returned {len(embedding)} dimensions, expected {EMBEDDING_DIMENSIONS}."
-        )
-    if not all(math.isfinite(value) for value in embedding):
-        raise PreviewEmbeddingError("MuQ-MuLan returned a non-finite embedding.")
-    return embedding
+def _valid_embedding(embedding: list[float], dimensions: int) -> bool:
+    return len(embedding) == dimensions and all(math.isfinite(value) for value in embedding)
+
+
+def _embedder_timing(embedder: PreviewEmbedder) -> dict[str, float] | None:
+    timing = getattr(embedder, "last_timing", None)
+    return timing if isinstance(timing, dict) else None

@@ -14,6 +14,10 @@ RUNTIME_FILE_NAME = "runtime.json"
 DATABASE_FILE_NAME = "claude-dj.sqlite3"
 SPOTIFY_TOKEN_FILE_NAME = "spotify-token.json"
 DEFAULT_SPOTIFY_REDIRECT_URI = "http://127.0.0.1:8888/callback"
+LOCAL_MUQ_MODEL_NAME = "OpenMuQ/MuQ-large-msd-iter"
+LOCAL_MUQ_DIMENSIONS = 1024
+LOCAL_CLAP_MODEL_NAME = "laion/clap-htsat-fused"
+LOCAL_CLAP_DIMENSIONS = 512
 
 
 class MissingConfigError(RuntimeError):
@@ -26,6 +30,19 @@ class SpotifyConfig:
 
     client_id: str
     redirect_uri: str
+
+
+@dataclass(frozen=True)
+class EmbeddingConfig:
+    """Selected audio embedding provider and model metadata."""
+
+    provider: str
+    model_name: str
+    model_version: str | None
+    dimensions: int
+    fallback_model_name: str | None = None
+    fallback_model_version: str | None = None
+    fallback_dimensions: int | None = None
 
 
 def get_app_dir() -> Path:
@@ -67,4 +84,17 @@ def get_spotify_config() -> SpotifyConfig:
     return SpotifyConfig(
         client_id=client_id,
         redirect_uri=os.environ.get("SPOTIFY_REDIRECT_URI", DEFAULT_SPOTIFY_REDIRECT_URI),
+    )
+
+
+def get_embedding_config() -> EmbeddingConfig:
+    """Return the local audio embedding provider with automatic fallback metadata."""
+    return EmbeddingConfig(
+        provider="local",
+        model_name=LOCAL_MUQ_MODEL_NAME,
+        model_version=None,
+        dimensions=LOCAL_MUQ_DIMENSIONS,
+        fallback_model_name=LOCAL_CLAP_MODEL_NAME,
+        fallback_model_version=None,
+        fallback_dimensions=LOCAL_CLAP_DIMENSIONS,
     )
