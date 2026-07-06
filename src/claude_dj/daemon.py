@@ -102,6 +102,8 @@ class DaemonRequestHandler(BaseHTTPRequestHandler):
                 "port": self.server.state.port,
                 "active_session_id": self.server.state.active_session_id,
                 "catalog": self.server.state.catalog_status.to_json(),
+                "sync": self._sync_status_json(),
+                "indexing": self.server.state.sync_indexing,
             },
         )
 

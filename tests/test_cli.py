@@ -60,6 +60,95 @@ def test_status_reports_running_daemon(monkeypatch, tmp_path) -> None:
         stop_test_server(server, thread)
 
 
+def test_status_prints_catalog_sync_and_last_run_details(monkeypatch) -> None:
+    response = {
+        "host": "127.0.0.1",
+        "port": 63964,
+        "sync": {"status": "failed", "error": "Could not generate MuQ embedding."},
+        "catalog": {
+            "source_count": 25,
+            "track_count": 1838,
+            "preview_match_count": 67,
+            "preview_pending_count": 1771,
+            "embedding_count": 65,
+            "ready_track_count": 65,
+            "embedding_pending_count": 0,
+            "needs_onboarding": True,
+            "ready_for_audio_similarity": True,
+        },
+        "indexing": {
+            "spotify": {"ran": True, "playlist_count": 25, "track_count": 1838, "skipped_track_count": 3},
+            "previews": {"ran": True, "matched_count": 65, "failed_count": 2},
+            "embeddings": {
+                "ran": True,
+                "model": "OpenMuQ/MuQ-large-msd-iter",
+                "dimensions": 1024,
+                "embedded_count": 65,
+                "failed_count": 0,
+            },
+        },
+    }
+
+    monkeypatch.setattr(cli, "load_runtime_info", lambda: object())
+    monkeypatch.setattr(cli, "is_daemon_running", lambda runtime_info: True)
+    monkeypatch.setattr(cli, "get_json", lambda runtime_info, path: response)
+    stdout = io.StringIO()
+
+    exit_code = cli.run(["status"], stdout=stdout)
+
+    assert exit_code == 0
+    assert stdout.getvalue() == (
+        "Claude DJ daemon is running on 127.0.0.1:63964.\n"
+        "\n"
+        "Sync: failed\n"
+        "Error: Could not generate MuQ embedding.\n"
+        "Catalog:\n"
+        "  Playlists: 25\n"
+        "  Tracks: 1838\n"
+        "  Previews: 67 matched, 1771 pending\n"
+        "  Embeddings: 65 ready, 0 pending\n"
+        "  Model: OpenMuQ/MuQ-large-msd-iter, 1024 dimensions\n"
+        "\n"
+        "Readiness:\n"
+        "  Ready tracks: 65\n"
+        "  Audio similarity: ready\n"
+        "  Onboarding: still loading songs\n"
+        "\n"
+        "Last run:\n"
+        "  Spotify: indexed 25 playlists, 1838 tracks, skipped 3\n"
+        "  Previews: matched 65, failed 2\n"
+        "  Embeddings: embedded 65, failed 0\n"
+    )
+
+
+def test_status_reports_still_loading_when_previews_are_pending(monkeypatch) -> None:
+    response = {
+        "host": "127.0.0.1",
+        "port": 63964,
+        "catalog": {
+            "source_count": 25,
+            "track_count": 1838,
+            "preview_match_count": 67,
+            "preview_pending_count": 1771,
+            "embedding_count": 65,
+            "ready_track_count": 65,
+            "embedding_pending_count": 0,
+            "needs_onboarding": False,
+            "ready_for_audio_similarity": True,
+        },
+    }
+
+    monkeypatch.setattr(cli, "load_runtime_info", lambda: object())
+    monkeypatch.setattr(cli, "is_daemon_running", lambda runtime_info: True)
+    monkeypatch.setattr(cli, "get_json", lambda runtime_info, path: response)
+    stdout = io.StringIO()
+
+    exit_code = cli.run(["status"], stdout=stdout)
+
+    assert exit_code == 0
+    assert "Onboarding: still loading songs" in stdout.getvalue()
+
+
 def test_sync_posts_to_sync_start_and_prints_on_device_message(monkeypatch) -> None:
     calls = []
     response = {

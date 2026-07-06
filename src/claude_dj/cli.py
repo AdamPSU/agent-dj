@@ -111,8 +111,119 @@ def status(stdout: TextIO) -> int:
         stdout.write("Claude DJ daemon is not running.\n")
         return 1
 
-    stdout.write(f"Claude DJ daemon is running on {runtime_info.host}:{runtime_info.port}.\n")
+    response = get_json(runtime_info, "/status")
+    response_host = response.get("host")
+    response_port = response.get("port")
+    host = response_host if isinstance(response_host, str) else runtime_info.host
+    port = response_port if isinstance(response_port, int) else runtime_info.port
+    stdout.write(f"Claude DJ daemon is running on {host}:{port}.\n")
+    write_status_details(response, stdout)
     return 0
+
+
+def write_status_details(response: dict[str, object], stdout: TextIO) -> None:
+    """Print catalog and sync details returned by the daemon status endpoint."""
+    sync = _dict_value(response, "sync")
+    catalog = _dict_value(response, "catalog")
+    indexing = _dict_value(response, "indexing")
+    if not sync and not catalog and not indexing:
+        return
+
+    stdout.write("\n")
+    if sync:
+        stdout.write(f"Sync: {_display(sync.get('status'))}\n")
+        error = sync.get("error")
+        if isinstance(error, str) and error:
+            stdout.write(f"Error: {error}\n")
+    if catalog:
+        write_catalog_status(catalog, indexing, stdout)
+    if catalog:
+        write_readiness_status(catalog, stdout)
+    if indexing:
+        write_last_run_status(indexing, stdout)
+
+
+def write_catalog_status(catalog: dict[str, object], indexing: dict[str, object], stdout: TextIO) -> None:
+    """Print catalog counts from daemon status."""
+    stdout.write("Catalog:\n")
+    stdout.write(f"  Playlists: {_int_value(catalog, 'source_count')}\n")
+    stdout.write(f"  Tracks: {_int_value(catalog, 'track_count')}\n")
+    stdout.write(
+        "  Previews: "
+        f"{_int_value(catalog, 'preview_match_count')} matched, "
+        f"{_int_value(catalog, 'preview_pending_count')} pending\n"
+    )
+    stdout.write(
+        "  Embeddings: "
+        f"{_int_value(catalog, 'embedding_count')} ready, "
+        f"{_int_value(catalog, 'embedding_pending_count')} pending\n"
+    )
+    embeddings = _dict_value(indexing, "embeddings")
+    model = embeddings.get("model")
+    dimensions = embeddings.get("dimensions")
+    if isinstance(model, str) and isinstance(dimensions, int):
+        stdout.write(f"  Model: {model}, {dimensions} dimensions\n")
+
+
+def write_readiness_status(catalog: dict[str, object], stdout: TextIO) -> None:
+    """Print readiness details from catalog status."""
+    stdout.write("\n")
+    stdout.write("Readiness:\n")
+    stdout.write(f"  Ready tracks: {_int_value(catalog, 'ready_track_count')}\n")
+    audio_similarity = "ready" if catalog.get("ready_for_audio_similarity") is True else "not ready"
+    still_loading = (
+        catalog.get("needs_onboarding") is True
+        or _int_value(catalog, "preview_pending_count") > 0
+        or _int_value(catalog, "embedding_pending_count") > 0
+    )
+    onboarding = "still loading songs" if still_loading else "complete"
+    stdout.write(f"  Audio similarity: {audio_similarity}\n")
+    stdout.write(f"  Onboarding: {onboarding}\n")
+
+
+def write_last_run_status(indexing: dict[str, object], stdout: TextIO) -> None:
+    """Print the last sync pipeline summaries if any phase ran."""
+    spotify = _dict_value(indexing, "spotify")
+    previews = _dict_value(indexing, "previews")
+    embeddings = _dict_value(indexing, "embeddings")
+    if not any(phase.get("ran") is True for phase in (spotify, previews, embeddings)):
+        return
+
+    stdout.write("\n")
+    stdout.write("Last run:\n")
+    if spotify.get("ran") is True:
+        stdout.write(
+            "  Spotify: indexed "
+            f"{_int_value(spotify, 'playlist_count')} playlists, "
+            f"{_int_value(spotify, 'track_count')} tracks, "
+            f"skipped {_int_value(spotify, 'skipped_track_count')}\n"
+        )
+    if previews.get("ran") is True:
+        stdout.write(
+            "  Previews: "
+            f"matched {_int_value(previews, 'matched_count')}, "
+            f"failed {_int_value(previews, 'failed_count')}\n"
+        )
+    if embeddings.get("ran") is True:
+        stdout.write(
+            "  Embeddings: "
+            f"embedded {_int_value(embeddings, 'embedded_count')}, "
+            f"failed {_int_value(embeddings, 'failed_count')}\n"
+        )
+
+
+def _dict_value(data: dict[str, object], key: str) -> dict[str, object]:
+    value = data.get(key)
+    return value if isinstance(value, dict) else {}
+
+
+def _int_value(data: dict[str, object], key: str) -> int:
+    value = data.get(key)
+    return value if isinstance(value, int) else 0
+
+
+def _display(value: object) -> str:
+    return value if isinstance(value, str) and value else "unknown"
 
 
 def quit_daemon(stdout: TextIO) -> int:

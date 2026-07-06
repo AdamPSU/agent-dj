@@ -127,6 +127,37 @@ def test_status_endpoint_returns_daemon_state() -> None:
         stop_test_server(server, thread)
 
 
+def test_status_endpoint_returns_sync_and_indexing_state() -> None:
+    server, thread = start_test_server()
+
+    try:
+        host, port = server.server_address
+        server.state.sync_status = "failed"
+        server.state.sync_error = "Could not generate MuQ embedding."
+        server.state.sync_indexing = {
+            "spotify": {"ran": True, "playlist_count": 2, "track_count": 30, "skipped_track_count": 1},
+            "previews": {"ran": True, "matched_count": 25, "failed_count": 2},
+            "embeddings": {
+                "ran": True,
+                "model": LOCAL_MUQ_MODEL_NAME,
+                "dimensions": LOCAL_MUQ_DIMENSIONS,
+                "embedded_count": 23,
+                "failed_count": 2,
+            },
+        }
+
+        response = json_request("GET", f"http://{host}:{port}/status")
+
+        assert response["sync"] == {
+            "status": "failed",
+            "error": "Could not generate MuQ embedding.",
+        }
+        assert response["indexing"]["spotify"]["track_count"] == 30
+        assert response["indexing"]["embeddings"]["model"] == LOCAL_MUQ_MODEL_NAME
+    finally:
+        stop_test_server(server, thread)
+
+
 def test_session_start_claims_active_session() -> None:
     server, thread = start_test_server()
 
