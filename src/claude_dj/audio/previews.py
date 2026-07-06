@@ -67,6 +67,7 @@ def resolve_deezer_previews(
     resolver: Callable[[str], DeezerPreviewResult] = resolve_isrc_preview,
     sleep: Callable[[float], None] = time.sleep,
     requests_per_second: int = DEEZER_REQUESTS_PER_SECOND,
+    limit: int | None = None,
 ) -> PreviewResolutionSummary:
     """Resolve missing track previews through Deezer using ISRCs only."""
     counts: PreviewStatusCounts = {
@@ -79,7 +80,7 @@ def resolve_deezer_previews(
     }
 
     delay = 1 / requests_per_second if requests_per_second > 0 else 0
-    candidates = fetch_tracks_needing_preview_resolution(db)
+    candidates = fetch_tracks_needing_preview_resolution(db, limit=limit)
     for candidate in candidates:
         if candidate.isrc is None:
             _store_and_count_result(
@@ -123,6 +124,7 @@ def _store_and_count_result(
     _increment_count(counts, result.status)
     if result.status != "failed":
         _store_result(db, track_id=track_id, result=result)
+        db.commit()
 
 
 def _increment_count(counts: PreviewStatusCounts, status: str) -> None:

@@ -161,3 +161,54 @@ def test_generate_audio_embeddings_counts_embedder_failures(tmp_path) -> None:
         assert summary.catalog_status.embedding_count == 0
     finally:
         db.close()
+
+
+def test_generate_audio_embeddings_limits_one_chunk(tmp_path) -> None:
+    db = connect(tmp_path / "claude-dj.sqlite3")
+
+    try:
+        initialize_schema(db, dimensions=1024)
+        for index in range(1, 12):
+            add_matched_track(db, index=index)
+        db.commit()
+        embedder = FakeEmbedder(model_name=LOCAL_MUQ_MODEL_NAME, dimensions=1024)
+
+        summary = generate_audio_embeddings(db, embedder=embedder, limit=10)
+
+        assert len(embedder.calls) == 10
+        assert summary.embedded_count == 10
+        assert summary.catalog_status.embedding_count == 10
+        assert summary.catalog_status.embedding_pending_count == 1
+    finally:
+        db.close()
+
+
+def test_generate_audio_embeddings_commits_each_successful_embedding(tmp_path) -> None:
+    database_file = tmp_path / "claude-dj.sqlite3"
+    db = connect(database_file)
+
+    class ObservingEmbedder(FakeEmbedder):
+        def embed(self, candidate: TrackEmbeddingCandidate):
+            embedding = super().embed(candidate)
+            observer = connect(database_file)
+            try:
+                self.observations.append(
+                    observer.execute("SELECT COUNT(*) AS count FROM track_embeddings").fetchone()["count"]
+                )
+            finally:
+                observer.close()
+            return embedding
+
+    try:
+        initialize_schema(db, dimensions=1024)
+        add_matched_track(db, index=1)
+        add_matched_track(db, index=2)
+        db.commit()
+        embedder = ObservingEmbedder(model_name=LOCAL_MUQ_MODEL_NAME, dimensions=1024)
+        embedder.observations = []
+
+        generate_audio_embeddings(db, embedder=embedder, limit=2)
+
+        assert embedder.observations == [0, 1]
+    finally:
+        db.close()

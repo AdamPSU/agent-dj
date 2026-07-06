@@ -36,6 +36,7 @@ from claude_dj.storage.db import CatalogStatus, connect, get_catalog_status, ini
 
 LOOPBACK_HOST = "127.0.0.1"
 MIN_READY_TRACKS = 30
+SYNC_CHUNK_SIZE = 10
 TRACK_COOLDOWN = timedelta(hours=3)
 
 
@@ -235,10 +236,12 @@ class DaemonRequestHandler(BaseHTTPRequestHandler):
         )
 
     def _resolve_deezer_previews(self) -> dict[str, object]:
-        return self._run_catalog_step_if_needed(
-            self.server.state.catalog_status.needs_preview_resolution,
-            self.server.state.preview_resolver,
-        )
+        if self.server.state.preview_resolver is None:
+            return {"ran": False}
+
+        summary = self.server.state.preview_resolver()
+        self.server.state.catalog_status = summary.catalog_status
+        return summary.to_json()
 
     def _run_catalog_step_if_needed(
         self,
@@ -272,8 +275,10 @@ class DaemonRequestHandler(BaseHTTPRequestHandler):
         error: str | None = None
         try:
             indexing["spotify"] = self._run_spotify_indexing()
-            indexing["previews"] = self._resolve_deezer_previews()
-            indexing["embeddings"] = self._generate_audio_embeddings()
+            with self.server.state.sync_condition:
+                self.server.state.sync_indexing = indexing
+                self.server.state.sync_condition.notify_all()
+            indexing["previews"], indexing["embeddings"] = self._run_catalog_chunks(indexing["spotify"])
         except Exception as exc:
             status = "failed"
             error = str(exc)
@@ -283,6 +288,50 @@ class DaemonRequestHandler(BaseHTTPRequestHandler):
             self.server.state.sync_error = error
             self.server.state.sync_indexing = indexing
             self.server.state.sync_condition.notify_all()
+
+    def _run_catalog_chunks(
+        self,
+        spotify_indexing: dict[str, object],
+    ) -> tuple[dict[str, object], dict[str, object]]:
+        previews = _empty_indexing_payload()["previews"]
+        embeddings = _empty_indexing_payload()["embeddings"]
+
+        while (
+            self.server.state.catalog_status.needs_preview_resolution
+            or self.server.state.catalog_status.needs_embeddings
+        ):
+            progressed = False
+
+            if (
+                self.server.state.catalog_status.needs_preview_resolution
+                or (
+                    self.server.state.catalog_status.needs_embeddings
+                    and self.server.state.embedding_generator is not None
+                )
+            ):
+                preview_summary = self._resolve_deezer_previews()
+                previews = _merge_preview_indexing(previews, preview_summary)
+                progressed = _preview_progressed(preview_summary)
+                if preview_summary.get("error_code") == "deezer_rate_limited":
+                    break
+
+            if self.server.state.catalog_status.needs_embeddings:
+                embedding_summary = self._generate_audio_embeddings()
+                embeddings = _merge_embedding_indexing(embeddings, embedding_summary)
+                progressed = _embedding_progressed(embedding_summary) or progressed
+
+            with self.server.state.sync_condition:
+                self.server.state.sync_indexing = {
+                    "spotify": spotify_indexing,
+                    "previews": previews,
+                    "embeddings": embeddings,
+                }
+                self.server.state.sync_condition.notify_all()
+
+            if not progressed:
+                break
+
+        return previews, embeddings
 
     def _wait_for_ready_tracks_or_sync_terminal(self) -> None:
         while self.server.state.catalog_status.ready_track_count < MIN_READY_TRACKS:
@@ -383,6 +432,54 @@ def _empty_indexing_payload() -> dict[str, dict[str, object]]:
     }
 
 
+def _merge_preview_indexing(current: dict[str, object], update: dict[str, object]) -> dict[str, object]:
+    merged = dict(current)
+    count_keys = (
+        "resolved_count",
+        "matched_count",
+        "no_preview_count",
+        "not_found_count",
+        "no_isrc_count",
+        "rate_limited_count",
+        "failed_count",
+    )
+    merged["ran"] = bool(merged.get("ran")) or bool(update.get("ran"))
+    for key in count_keys:
+        merged[key] = _int_payload_value(merged, key) + _int_payload_value(update, key)
+    for key in ("provider", "error_code"):
+        value = update.get(key)
+        if isinstance(value, str):
+            merged[key] = value
+    return merged
+
+
+def _merge_embedding_indexing(current: dict[str, object], update: dict[str, object]) -> dict[str, object]:
+    merged = dict(current)
+    merged["ran"] = bool(merged.get("ran")) or bool(update.get("ran"))
+    for key in ("embedded_count", "failed_count"):
+        merged[key] = _int_payload_value(merged, key) + _int_payload_value(update, key)
+    for key in ("model", "dimensions", "timing"):
+        if key in update:
+            merged[key] = update[key]
+    return merged
+
+
+def _preview_progressed(summary: dict[str, object]) -> bool:
+    return any(
+        _int_payload_value(summary, key) > 0
+        for key in ("resolved_count", "matched_count", "no_preview_count", "not_found_count", "no_isrc_count")
+    )
+
+
+def _embedding_progressed(summary: dict[str, object]) -> bool:
+    return _int_payload_value(summary, "embedded_count") > 0
+
+
+def _int_payload_value(payload: dict[str, object], key: str) -> int:
+    value = payload.get(key)
+    return value if isinstance(value, int) else 0
+
+
 def _session_start_error_code(
     ready: bool,
     recommendation: DJBlock | None,
@@ -434,7 +531,7 @@ def run_daemon() -> int:
         preview_db = connect(database_file)
         try:
             initialize_embedding_schema(preview_db)
-            return resolve_deezer_previews(preview_db)
+            return resolve_deezer_previews(preview_db, limit=SYNC_CHUNK_SIZE)
         finally:
             preview_db.close()
 
@@ -442,7 +539,7 @@ def run_daemon() -> int:
         embedding_db = connect(database_file)
         try:
             initialize_embedding_schema(embedding_db)
-            return generate_audio_embeddings(embedding_db)
+            return generate_audio_embeddings(embedding_db, limit=SYNC_CHUNK_SIZE)
         finally:
             embedding_db.close()
 

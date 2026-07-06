@@ -73,10 +73,11 @@ def generate_audio_embeddings(
     db: sqlite3.Connection,
     *,
     embedder: PreviewEmbedder | None = None,
+    limit: int | None = None,
 ) -> EmbeddingGenerationSummary:
     """Generate embeddings for matched Deezer preview URLs."""
     resolved_embedder = embedder or create_preview_embedder(get_embedding_config())
-    candidates = fetch_tracks_needing_embeddings(db)
+    candidates = fetch_tracks_needing_embeddings(db, limit=limit)
     if not candidates:
         return EmbeddingGenerationSummary(
             catalog_status=get_catalog_status(db),
@@ -122,9 +123,9 @@ def generate_audio_embeddings(
             model_version=resolved_embedder.model_version,
             dimensions=resolved_embedder.dimensions,
         )
+        db.commit()
         embedded_count += 1
 
-    db.commit()
     return EmbeddingGenerationSummary(
         catalog_status=get_catalog_status(db),
         model_name=resolved_embedder.model_name,

@@ -35,7 +35,7 @@ class CatalogStatus:
     @property
     def needs_preview_resolution(self) -> bool:
         """Return whether indexed tracks still need preview matching."""
-        return self.track_count > 0 and self._preview_pending_count() > 0 and self.embedding_count == 0
+        return self.track_count > 0 and self._preview_pending_count() > 0
 
     @property
     def needs_embeddings(self) -> bool:
@@ -327,7 +327,14 @@ def fetch_tracks_needing_preview_resolution(
         SELECT tracks.id, tracks.isrc
         FROM tracks
         LEFT JOIN preview_matches ON preview_matches.track_id = tracks.id
+        LEFT JOIN track_embeddings ON track_embeddings.track_id = tracks.id
         WHERE preview_matches.id IS NULL
+           OR (
+             preview_matches.status = 'matched'
+             AND preview_matches.preview_url IS NOT NULL
+             AND preview_matches.preview_url != ''
+             AND track_embeddings.track_id IS NULL
+           )
         ORDER BY tracks.id
     """
     params: tuple[int, ...] = ()

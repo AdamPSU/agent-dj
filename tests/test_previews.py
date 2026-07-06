@@ -7,7 +7,22 @@ from claude_dj.audio.previews import (
     DEEZER_REQUESTS_PER_SECOND,
     resolve_deezer_previews,
 )
-from claude_dj.storage.db import connect, initialize_schema, upsert_track
+from claude_dj.storage.db import EMBEDDING_DIMENSIONS, connect, initialize_schema, upsert_track, upsert_track_embedding
+
+
+def add_preview_track(db, index: int, *, isrc: str | None = None) -> int:
+    return upsert_track(
+        db,
+        spotify_track_id=f"spotify-track-{index}",
+        spotify_uri=f"spotify:track:{index}",
+        isrc=isrc or f"US{index:03d}",
+        title=f"Track {index}",
+        artist_name="Artist",
+        album_name=None,
+        duration_ms=None,
+        explicit=False,
+        popularity=None,
+    )
 
 
 def test_deezer_rate_limit_defaults_match_community_observed_window() -> None:
@@ -81,7 +96,7 @@ def test_resolve_deezer_previews_stores_isrc_matches_and_failures(tmp_path) -> N
         db.close()
 
 
-def test_resolve_deezer_previews_skips_cached_preview_matches(tmp_path) -> None:
+def test_resolve_deezer_previews_skips_embedded_preview_matches(tmp_path) -> None:
     db = connect(tmp_path / "claude-dj.sqlite3")
     initialize_schema(db)
     track_id = upsert_track(
@@ -108,6 +123,14 @@ def test_resolve_deezer_previews_skips_cached_preview_matches(tmp_path) -> None:
         ) VALUES (?, 'deezer', 'deezer-1', 'https://example.com/old.mp3', 'isrc', 'matched')
         """,
         (track_id,),
+    )
+    db.commit()
+    upsert_track_embedding(
+        db,
+        track_id=track_id,
+        embedding=[1.0] + [0.0] * (EMBEDDING_DIMENSIONS - 1),
+        model_name="OpenMuQ/MuQ-large-msd-iter",
+        model_version=None,
     )
     db.commit()
 
@@ -198,5 +221,64 @@ def test_resolve_deezer_previews_leaves_track_pending_after_rate_limit(tmp_path)
         assert summary.catalog_status.preview_match_count == 0
         assert summary.catalog_status.preview_pending_count == 2
         assert summary.catalog_status.needs_preview_resolution is True
+    finally:
+        db.close()
+
+
+def test_resolve_deezer_previews_limits_one_chunk(tmp_path) -> None:
+    db = connect(tmp_path / "claude-dj.sqlite3")
+    initialize_schema(db)
+    for index in range(1, 12):
+        add_preview_track(db, index)
+
+    calls = []
+
+    def fake_resolver(isrc):
+        calls.append(isrc)
+        return DeezerPreviewResult(
+            status="matched",
+            provider_track_id=f"deezer-{len(calls)}",
+            preview_url=f"https://example.com/preview-{len(calls)}.mp3",
+            failure_reason=None,
+        )
+
+    try:
+        summary = resolve_deezer_previews(db, resolver=fake_resolver, sleep=lambda seconds: None, limit=10)
+
+        assert len(calls) == 10
+        assert summary.resolved_count == 10
+        assert summary.catalog_status.preview_match_count == 10
+        assert summary.catalog_status.preview_pending_count == 1
+    finally:
+        db.close()
+
+
+def test_resolve_deezer_previews_commits_each_stored_preview(tmp_path) -> None:
+    database_file = tmp_path / "claude-dj.sqlite3"
+    db = connect(database_file)
+    initialize_schema(db)
+    add_preview_track(db, 1)
+
+    observations = []
+
+    def fake_sleep(seconds):
+        observer = connect(database_file)
+        try:
+            observations.append(observer.execute("SELECT COUNT(*) AS count FROM preview_matches").fetchone()["count"])
+        finally:
+            observer.close()
+
+    def fake_resolver(isrc):
+        return DeezerPreviewResult(
+            status="matched",
+            provider_track_id="deezer-1",
+            preview_url="https://example.com/preview.mp3",
+            failure_reason=None,
+        )
+
+    try:
+        resolve_deezer_previews(db, resolver=fake_resolver, sleep=fake_sleep, limit=1)
+
+        assert observations == [1]
     finally:
         db.close()

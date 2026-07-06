@@ -6,6 +6,7 @@ from claude_dj.storage.db import (
     EMBEDDING_DIMENSIONS,
     TrackEmbeddingCandidate,
     connect,
+    fetch_tracks_needing_preview_resolution,
     fetch_tracks_needing_embeddings,
     get_catalog_status,
     initialize_schema,
@@ -237,6 +238,114 @@ def test_catalog_status_reports_phase_specific_readiness(tmp_path) -> None:
         db.close()
 
 
+def test_catalog_status_needs_preview_resolution_until_all_tracks_have_preview_rows(tmp_path) -> None:
+    db = connect(tmp_path / "claude-dj.sqlite3")
+
+    try:
+        initialize_schema(db)
+        source_id = upsert_source(
+            db,
+            source_type="spotify_playlist",
+            source_id="playlist-1",
+            name="Focus",
+            description=None,
+        )
+        embedded_track_id = upsert_track(
+            db,
+            spotify_track_id="spotify-track-1",
+            spotify_uri="spotify:track:1",
+            isrc="US123",
+            title="Track One",
+            artist_name="Artist",
+            album_name="Album",
+            duration_ms=123000,
+            explicit=False,
+            popularity=50,
+        )
+        pending_track_id = upsert_track(
+            db,
+            spotify_track_id="spotify-track-2",
+            spotify_uri="spotify:track:2",
+            isrc="US456",
+            title="Track Two",
+            artist_name="Artist",
+            album_name="Album",
+            duration_ms=124000,
+            explicit=False,
+            popularity=51,
+        )
+        replace_source_tracks(
+            db,
+            source_id,
+            [
+                (embedded_track_id, 0, "2024-01-01T00:00:00Z"),
+                (pending_track_id, 1, "2024-01-01T00:00:00Z"),
+            ],
+        )
+        upsert_preview_match(
+            db,
+            track_id=embedded_track_id,
+            provider="deezer",
+            provider_track_id="deezer-1",
+            preview_url="https://example.com/preview.mp3",
+            match_method="isrc",
+            status="matched",
+            failure_reason=None,
+        )
+        upsert_track_embedding(
+            db,
+            track_id=embedded_track_id,
+            embedding=[1.0] + [0.0] * (EMBEDDING_DIMENSIONS - 1),
+            model_name="OpenMuQ/MuQ-large-msd-iter",
+            model_version=None,
+        )
+
+        status = get_catalog_status(db)
+
+        assert status.preview_pending_count == 1
+        assert status.embedding_count == 1
+        assert status.needs_preview_resolution is True
+        assert status.needs_onboarding is True
+    finally:
+        db.close()
+
+
+def test_preview_resolution_refreshes_matched_urls_until_embedding_exists(tmp_path) -> None:
+    db = connect(tmp_path / "claude-dj.sqlite3")
+
+    try:
+        initialize_schema(db)
+        track_id = upsert_track(
+            db,
+            spotify_track_id="spotify-track-1",
+            spotify_uri="spotify:track:1",
+            isrc="US123",
+            title="Track One",
+            artist_name="Artist",
+            album_name="Album",
+            duration_ms=123000,
+            explicit=False,
+            popularity=50,
+        )
+        upsert_preview_match(
+            db,
+            track_id=track_id,
+            provider="deezer",
+            provider_track_id="deezer-1",
+            preview_url="https://example.com/stale-preview.mp3",
+            match_method="isrc",
+            status="matched",
+            failure_reason=None,
+        )
+        db.commit()
+
+        candidates = fetch_tracks_needing_preview_resolution(db)
+
+        assert candidates[0].track_id == track_id
+    finally:
+        db.close()
+
+
 def test_upsert_source_track_and_replace_memberships(tmp_path) -> None:
     db = connect(tmp_path / "claude-dj.sqlite3")
 
@@ -301,7 +410,7 @@ def test_upsert_source_track_and_replace_memberships(tmp_path) -> None:
         db.close()
 
 
-def test_catalog_status_reports_ready_after_playlist_tracks_and_embeddings(tmp_path) -> None:
+def test_catalog_status_reports_playable_but_still_onboarding_without_preview_rows(tmp_path) -> None:
     db = connect(tmp_path / "claude-dj.sqlite3")
 
     try:
@@ -339,7 +448,8 @@ def test_catalog_status_reports_ready_after_playlist_tracks_and_embeddings(tmp_p
         assert status.preview_match_count == 0
         assert status.embedding_count == 1
         assert status.ready_track_count == 1
-        assert status.needs_onboarding is False
+        assert status.needs_preview_resolution is True
+        assert status.needs_onboarding is True
     finally:
         db.close()
 

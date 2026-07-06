@@ -632,6 +632,186 @@ def test_session_start_generates_embeddings_after_preview_resolution() -> None:
         stop_test_server(server, thread)
 
 
+def test_sync_pipeline_resolves_and_embeds_in_chunks() -> None:
+    calls = []
+    catalog_states = [
+        CatalogStatus(
+            source_count=1,
+            track_count=25,
+            embedding_count=0,
+            ready_track_count=0,
+            preview_match_count=10,
+            preview_pending_count=15,
+            embedding_pending_count=10,
+        ),
+        CatalogStatus(
+            source_count=1,
+            track_count=25,
+            embedding_count=10,
+            ready_track_count=10,
+            preview_match_count=10,
+            preview_pending_count=15,
+            embedding_pending_count=0,
+        ),
+        CatalogStatus(
+            source_count=1,
+            track_count=25,
+            embedding_count=10,
+            ready_track_count=10,
+            preview_match_count=20,
+            preview_pending_count=5,
+            embedding_pending_count=10,
+        ),
+        CatalogStatus(
+            source_count=1,
+            track_count=25,
+            embedding_count=20,
+            ready_track_count=20,
+            preview_match_count=20,
+            preview_pending_count=5,
+            embedding_pending_count=0,
+        ),
+        CatalogStatus(
+            source_count=1,
+            track_count=25,
+            embedding_count=20,
+            ready_track_count=20,
+            preview_match_count=25,
+            preview_pending_count=0,
+            embedding_pending_count=5,
+        ),
+        CatalogStatus(
+            source_count=1,
+            track_count=25,
+            embedding_count=25,
+            ready_track_count=25,
+            preview_match_count=25,
+            preview_pending_count=0,
+            embedding_pending_count=0,
+        ),
+    ]
+
+    def fake_preview_resolver() -> PreviewResolutionSummary:
+        calls.append("previews")
+        return PreviewResolutionSummary(catalog_status=catalog_states.pop(0), matched_count=10 if len(calls) < 5 else 5)
+
+    def fake_embedding_generator() -> EmbeddingGenerationSummary:
+        calls.append("embeddings")
+        return EmbeddingGenerationSummary(
+            catalog_status=catalog_states.pop(0),
+            model_name=LOCAL_MUQ_MODEL_NAME,
+            dimensions=LOCAL_MUQ_DIMENSIONS,
+            embedded_count=10 if len(calls) < 6 else 5,
+        )
+
+    server = create_server(
+        catalog_status=CatalogStatus(
+            source_count=1,
+            track_count=25,
+            embedding_count=0,
+            ready_track_count=0,
+            preview_match_count=0,
+            preview_pending_count=25,
+            embedding_pending_count=0,
+        ),
+        preview_resolver=fake_preview_resolver,
+        embedding_generator=fake_embedding_generator,
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+
+    try:
+        host, port = server.server_address
+
+        response = json_request("POST", f"http://{host}:{port}/sync/start", {})
+        assert response["sync"]["status"] == "running"
+
+        deadline = threading.Event()
+        for _ in range(40):
+            status = json_request("GET", f"http://{host}:{port}/status")
+            if status["sync"]["status"] == "completed":
+                break
+            deadline.wait(0.05)
+
+        status = json_request("GET", f"http://{host}:{port}/status")
+
+        assert calls == ["previews", "embeddings", "previews", "embeddings", "previews", "embeddings"]
+        assert status["sync"]["status"] == "completed"
+        assert status["catalog"]["preview_pending_count"] == 0
+        assert status["catalog"]["embedding_count"] == 25
+        assert status["indexing"]["previews"]["matched_count"] == 25
+        assert status["indexing"]["embeddings"]["embedded_count"] == 25
+    finally:
+        stop_test_server(server, thread)
+
+
+def test_sync_pipeline_refreshes_preview_urls_before_embedding_pending_tracks() -> None:
+    calls = []
+
+    def fake_preview_resolver() -> PreviewResolutionSummary:
+        calls.append("previews")
+        return PreviewResolutionSummary(
+            catalog_status=CatalogStatus(
+                source_count=1,
+                track_count=1,
+                embedding_count=0,
+                ready_track_count=0,
+                preview_match_count=1,
+                preview_pending_count=0,
+                embedding_pending_count=1,
+            ),
+            matched_count=1,
+        )
+
+    def fake_embedding_generator() -> EmbeddingGenerationSummary:
+        calls.append("embeddings")
+        return EmbeddingGenerationSummary(
+            catalog_status=CatalogStatus(
+                source_count=1,
+                track_count=1,
+                embedding_count=1,
+                ready_track_count=1,
+                preview_match_count=1,
+                preview_pending_count=0,
+                embedding_pending_count=0,
+            ),
+            model_name=LOCAL_MUQ_MODEL_NAME,
+            dimensions=LOCAL_MUQ_DIMENSIONS,
+            embedded_count=1,
+        )
+
+    server = create_server(
+        catalog_status=CatalogStatus(
+            source_count=1,
+            track_count=1,
+            embedding_count=0,
+            ready_track_count=0,
+            preview_match_count=1,
+            preview_pending_count=0,
+            embedding_pending_count=1,
+        ),
+        preview_resolver=fake_preview_resolver,
+        embedding_generator=fake_embedding_generator,
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+
+    try:
+        host, port = server.server_address
+
+        json_request("POST", f"http://{host}:{port}/sync/start", {})
+        waiter = threading.Event()
+        for _ in range(40):
+            status = json_request("GET", f"http://{host}:{port}/status")
+            if status["sync"]["status"] == "completed":
+                break
+            waiter.wait(0.05)
+
+        assert calls == ["previews", "embeddings"]
+    finally:
+        stop_test_server(server, thread)
+
+
 def test_session_start_refreshes_existing_spotify_catalog() -> None:
     calls = []
 
