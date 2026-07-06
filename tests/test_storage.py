@@ -4,8 +4,10 @@ import array
 
 from claude_dj.storage.db import (
     EMBEDDING_DIMENSIONS,
+    PlayableTrack,
     TrackEmbeddingCandidate,
     connect,
+    fetch_tracks_by_ids,
     fetch_tracks_needing_preview_resolution,
     fetch_tracks_needing_embeddings,
     get_catalog_status,
@@ -234,6 +236,57 @@ def test_catalog_status_reports_phase_specific_readiness(tmp_path) -> None:
         assert status.needs_preview_resolution is True
         assert status.needs_embeddings is False
         assert status.ready_for_audio_similarity is False
+    finally:
+        db.close()
+
+
+def test_fetch_tracks_by_ids_returns_playable_tracks_in_requested_order(tmp_path) -> None:
+    db = connect(tmp_path / "claude-dj.sqlite3")
+
+    try:
+        initialize_schema(db)
+        first_id = upsert_track(
+            db,
+            spotify_track_id="spotify-track-1",
+            spotify_uri="spotify:track:1",
+            isrc="US123",
+            title="Track One",
+            artist_name="Artist One",
+            album_name="Album",
+            duration_ms=123000,
+            explicit=False,
+            popularity=50,
+        )
+        second_id = upsert_track(
+            db,
+            spotify_track_id="spotify-track-2",
+            spotify_uri="spotify:track:2",
+            isrc="US456",
+            title="Track Two",
+            artist_name="Artist Two",
+            album_name="Album",
+            duration_ms=124000,
+            explicit=False,
+            popularity=51,
+        )
+        db.commit()
+
+        tracks = fetch_tracks_by_ids(db, [second_id, 999, first_id, second_id])
+
+        assert tracks == [
+            PlayableTrack(
+                track_id=second_id,
+                spotify_uri="spotify:track:2",
+                title="Track Two",
+                artist_name="Artist Two",
+            ),
+            PlayableTrack(
+                track_id=first_id,
+                spotify_uri="spotify:track:1",
+                title="Track One",
+                artist_name="Artist One",
+            ),
+        ]
     finally:
         db.close()
 

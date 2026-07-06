@@ -5,10 +5,19 @@ import os
 import threading
 import urllib.error
 import urllib.request
+from datetime import UTC, datetime
 
 import pytest
 
-from claude_dj.daemon import MIN_READY_TRACKS, create_server, write_runtime_file
+from claude_dj.daemon import (
+    MIN_READY_TRACKS,
+    PLAYBACK_POLL_SECONDS,
+    _queue_replenishment_if_needed,
+    _start_playback_monitor,
+    _stop_playback_monitor,
+    create_server,
+    write_runtime_file,
+)
 from claude_dj.audio.embeddings import EmbeddingGenerationSummary
 from claude_dj.config import LOCAL_MUQ_DIMENSIONS, LOCAL_MUQ_MODEL_NAME, get_embedding_config
 from claude_dj.audio.previews import PreviewResolutionSummary
@@ -18,7 +27,16 @@ from claude_dj.indexing import (
     SpotifyIndexingAuthRequired,
 )
 from claude_dj.recommendation.similarity import DJBlock, DJTrack
-from claude_dj.storage.db import CatalogStatus, connect, initialize_schema, upsert_track, upsert_track_embedding
+from claude_dj.adapters.spotify import SpotifyDevice, SpotifyNoActiveDeviceError, SpotifyPlaybackState
+from claude_dj.devices import PlaybackDeviceResult
+from claude_dj.storage.db import (
+    CatalogStatus,
+    PlayableTrack,
+    connect,
+    initialize_schema,
+    upsert_track,
+    upsert_track_embedding,
+)
 
 
 LEGACY_EMBEDDING_MODEL_NAME = "legacy-audio-model"
@@ -154,6 +172,26 @@ def test_status_endpoint_returns_sync_and_indexing_state() -> None:
         }
         assert response["indexing"]["spotify"]["track_count"] == 30
         assert response["indexing"]["embeddings"]["model"] == LOCAL_MUQ_MODEL_NAME
+    finally:
+        stop_test_server(server, thread)
+
+
+def test_status_endpoint_returns_playback_monitor_state() -> None:
+    server, thread = start_test_server()
+
+    try:
+        host, port = server.server_address
+        server.state.playback_monitor_status = "failed"
+        server.state.playback_monitor_error = "Spotify denied playback control."
+        server.state.known_spotify_uris = ["spotify:track:1", "spotify:track:2"]
+
+        response = json_request("GET", f"http://{host}:{port}/status")
+
+        assert response["playback"] == {
+            "status": "failed",
+            "known_track_count": 2,
+            "error": "Spotify denied playback control.",
+        }
     finally:
         stop_test_server(server, thread)
 
@@ -318,6 +356,454 @@ def test_session_start_returns_first_recommendation_when_ready() -> None:
                 {"track_id": 3, "role": "similar", "distance": 0.2},
             ],
         }
+    finally:
+        stop_test_server(server, thread)
+
+
+def test_session_start_starts_playback_from_ready_recommendation() -> None:
+    playback_calls = []
+
+    def fake_recommender(recently_played_track_ids: set[int]) -> DJBlock:
+        assert recently_played_track_ids == set()
+        return DJBlock(
+            source_id=10,
+            seed_track_id=1,
+            tracks=(
+                DJTrack(track_id=1, role="seed", distance=None),
+                DJTrack(track_id=2, role="similar", distance=0.1),
+                DJTrack(track_id=3, role="similar", distance=0.2),
+            ),
+        )
+
+    def fake_track_hydrator(track_ids: tuple[int, ...]) -> list[PlayableTrack]:
+        assert track_ids == (1, 2, 3)
+        return [
+            PlayableTrack(1, "spotify:track:1", "Track One", "Artist One"),
+            PlayableTrack(2, "spotify:track:2", "Track Two", "Artist Two"),
+            PlayableTrack(3, "spotify:track:3", "Track Three", "Artist Three"),
+        ]
+
+    def fake_playback_starter(spotify_uris: tuple[str, ...]) -> None:
+        playback_calls.append(spotify_uris)
+
+    server = create_server(
+        catalog_status=CatalogStatus(
+            source_count=1,
+            track_count=MIN_READY_TRACKS,
+            embedding_count=MIN_READY_TRACKS,
+            ready_track_count=MIN_READY_TRACKS,
+        ),
+        recommendation_generator=fake_recommender,
+        track_hydrator=fake_track_hydrator,
+        playback_starter=fake_playback_starter,
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+
+    try:
+        host, port = server.server_address
+
+        response = json_request(
+            "POST",
+            f"http://{host}:{port}/session/start",
+            {"session_id": "test-session"},
+        )
+
+        assert response["ok"] is True
+        assert playback_calls == [("spotify:track:1", "spotify:track:2", "spotify:track:3")]
+        assert response["playback"] == {
+            "started": True,
+            "track_count": 3,
+            "first_track": {
+                "track_id": 1,
+                "title": "Track One",
+                "artist_name": "Artist One",
+                "spotify_uri": "spotify:track:1",
+            },
+        }
+    finally:
+        stop_test_server(server, thread)
+
+
+def test_session_start_reports_device_fallback_when_playback_targets_device() -> None:
+    def fake_recommender(recently_played_track_ids: set[int]) -> DJBlock:
+        return DJBlock(source_id=10, seed_track_id=1, tracks=(DJTrack(track_id=1, role="seed", distance=None),))
+
+    def fake_track_hydrator(track_ids: tuple[int, ...]) -> list[PlayableTrack]:
+        return [PlayableTrack(1, "spotify:track:1", "Track One", "Artist One")]
+
+    def fake_playback_starter(spotify_uris: tuple[str, ...]) -> PlaybackDeviceResult:
+        assert spotify_uris == ("spotify:track:1",)
+        return PlaybackDeviceResult(
+            device=SpotifyDevice(
+                id="device-1",
+                name="MacBook",
+                type="Computer",
+                is_active=False,
+                is_restricted=False,
+            ),
+            used_fallback=True,
+            preferred_unavailable=False,
+        )
+
+    server = create_server(
+        catalog_status=CatalogStatus(
+            source_count=1,
+            track_count=MIN_READY_TRACKS,
+            embedding_count=MIN_READY_TRACKS,
+            ready_track_count=MIN_READY_TRACKS,
+        ),
+        recommendation_generator=fake_recommender,
+        track_hydrator=fake_track_hydrator,
+        playback_starter=fake_playback_starter,
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+
+    try:
+        host, port = server.server_address
+
+        response = json_request(
+            "POST",
+            f"http://{host}:{port}/session/start",
+            {"session_id": "test-session"},
+        )
+
+        assert response["ok"] is True
+        assert response["playback"] == {
+            "started": True,
+            "track_count": 1,
+            "first_track": {
+                "track_id": 1,
+                "title": "Track One",
+                "artist_name": "Artist One",
+                "spotify_uri": "spotify:track:1",
+            },
+            "device": {
+                "id": "device-1",
+                "name": "MacBook",
+                "type": "Computer",
+                "is_active": False,
+                "is_restricted": False,
+            },
+            "device_fallback": True,
+            "preferred_device_unavailable": False,
+        }
+    finally:
+        stop_test_server(server, thread)
+
+
+def test_queue_replenishment_queues_next_block_when_two_tracks_remain() -> None:
+    queue_calls = []
+
+    def fake_recommender(recently_played_track_ids: set[int]) -> DJBlock:
+        assert recently_played_track_ids == {1, 2, 3, 4}
+        return DJBlock(
+            source_id=20,
+            seed_track_id=5,
+            tracks=(
+                DJTrack(track_id=5, role="seed", distance=None),
+                DJTrack(track_id=6, role="similar", distance=0.1),
+                DJTrack(track_id=7, role="similar", distance=0.2),
+            ),
+        )
+
+    def fake_track_hydrator(track_ids: tuple[int, ...]) -> list[PlayableTrack]:
+        assert track_ids == (5, 6, 7)
+        return [
+            PlayableTrack(5, "spotify:track:5", "Track Five", "Artist"),
+            PlayableTrack(6, "spotify:track:6", "Track Six", "Artist"),
+            PlayableTrack(7, "spotify:track:7", "Track Seven", "Artist"),
+        ]
+
+    server = create_server(
+        catalog_status=CatalogStatus(
+            source_count=1,
+            track_count=MIN_READY_TRACKS,
+            embedding_count=MIN_READY_TRACKS,
+            ready_track_count=MIN_READY_TRACKS,
+        ),
+        recommendation_generator=fake_recommender,
+        track_hydrator=fake_track_hydrator,
+        queue_appender=lambda spotify_uris: queue_calls.append(spotify_uris),
+    )
+    server.state.known_spotify_uris = [
+        "spotify:track:1",
+        "spotify:track:2",
+        "spotify:track:3",
+        "spotify:track:4",
+    ]
+    now = datetime.now(UTC)
+    server.state.track_last_played_at = {
+        1: now,
+        2: now,
+        3: now,
+        4: now,
+    }
+
+    try:
+        result = _queue_replenishment_if_needed(
+            server.state,
+            SpotifyPlaybackState(item_uri="spotify:track:2", is_playing=True),
+        )
+
+        assert result is not None
+        assert result["queued_track_count"] == 3
+        assert queue_calls == [("spotify:track:5", "spotify:track:6", "spotify:track:7")]
+        assert server.state.known_spotify_uris == [
+            "spotify:track:1",
+            "spotify:track:2",
+            "spotify:track:3",
+            "spotify:track:4",
+            "spotify:track:5",
+            "spotify:track:6",
+            "spotify:track:7",
+        ]
+    finally:
+        server.server_close()
+
+
+def test_queue_replenishment_does_not_queue_when_more_than_two_tracks_remain() -> None:
+    queue_calls = []
+
+    def fake_recommender(recently_played_track_ids: set[int]) -> DJBlock:
+        raise AssertionError("recommendation should not run")
+
+    server = create_server(
+        catalog_status=CatalogStatus(
+            source_count=1,
+            track_count=MIN_READY_TRACKS,
+            embedding_count=MIN_READY_TRACKS,
+            ready_track_count=MIN_READY_TRACKS,
+        ),
+        recommendation_generator=fake_recommender,
+        track_hydrator=lambda track_ids: [],
+        queue_appender=lambda spotify_uris: queue_calls.append(spotify_uris),
+    )
+    server.state.known_spotify_uris = [
+        "spotify:track:1",
+        "spotify:track:2",
+        "spotify:track:3",
+        "spotify:track:4",
+        "spotify:track:5",
+    ]
+
+    try:
+        result = _queue_replenishment_if_needed(
+            server.state,
+            SpotifyPlaybackState(item_uri="spotify:track:1", is_playing=True),
+        )
+
+        assert result is None
+        assert queue_calls == []
+    finally:
+        server.server_close()
+
+
+def test_session_start_starts_playback_monitor_after_successful_playback() -> None:
+    def fake_recommender(recently_played_track_ids: set[int]) -> DJBlock:
+        return DJBlock(
+            source_id=10,
+            seed_track_id=1,
+            tracks=(DJTrack(track_id=1, role="seed", distance=None),),
+        )
+
+    def fake_track_hydrator(track_ids: tuple[int, ...]) -> list[PlayableTrack]:
+        return [PlayableTrack(1, "spotify:track:1", "Track One", "Artist One")]
+
+    server = create_server(
+        catalog_status=CatalogStatus(
+            source_count=1,
+            track_count=MIN_READY_TRACKS,
+            embedding_count=MIN_READY_TRACKS,
+            ready_track_count=MIN_READY_TRACKS,
+        ),
+        recommendation_generator=fake_recommender,
+        track_hydrator=fake_track_hydrator,
+        playback_starter=lambda spotify_uris: None,
+        playback_state_fetcher=lambda: SpotifyPlaybackState(item_uri=None, is_playing=False),
+        queue_appender=lambda spotify_uris: None,
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+
+    try:
+        host, port = server.server_address
+
+        response = json_request(
+            "POST",
+            f"http://{host}:{port}/session/start",
+            {"session_id": "test-session"},
+        )
+
+        assert response["ok"] is True
+        assert server.state.playback_monitor_status == "running"
+        assert server.state.playback_monitor_thread is not None
+        assert server.state.playback_monitor_thread.is_alive()
+    finally:
+        _stop_playback_monitor(server.state)
+        stop_test_server(server, thread)
+
+
+def test_playback_monitor_queues_when_two_tracks_remain() -> None:
+    queue_calls = []
+    queued = threading.Event()
+
+    def fake_recommender(recently_played_track_ids: set[int]) -> DJBlock:
+        return DJBlock(
+            source_id=20,
+            seed_track_id=5,
+            tracks=(
+                DJTrack(track_id=5, role="seed", distance=None),
+                DJTrack(track_id=6, role="similar", distance=0.1),
+            ),
+        )
+
+    def fake_track_hydrator(track_ids: tuple[int, ...]) -> list[PlayableTrack]:
+        return [
+            PlayableTrack(5, "spotify:track:5", "Track Five", "Artist"),
+            PlayableTrack(6, "spotify:track:6", "Track Six", "Artist"),
+        ]
+
+    def fake_queue_appender(spotify_uris: tuple[str, ...]) -> None:
+        queue_calls.append(spotify_uris)
+        queued.set()
+
+    server = create_server(
+        catalog_status=CatalogStatus(
+            source_count=1,
+            track_count=MIN_READY_TRACKS,
+            embedding_count=MIN_READY_TRACKS,
+            ready_track_count=MIN_READY_TRACKS,
+        ),
+        recommendation_generator=fake_recommender,
+        track_hydrator=fake_track_hydrator,
+        playback_state_fetcher=lambda: SpotifyPlaybackState(item_uri="spotify:track:2", is_playing=True),
+        queue_appender=fake_queue_appender,
+    )
+    server.state.known_spotify_uris = [
+        "spotify:track:1",
+        "spotify:track:2",
+        "spotify:track:3",
+        "spotify:track:4",
+    ]
+
+    try:
+        _start_playback_monitor(server.state, poll_seconds=0.01)
+
+        assert queued.wait(timeout=2)
+        assert queue_calls == [("spotify:track:5", "spotify:track:6")]
+        assert server.state.playback_monitor_status == "running"
+    finally:
+        _stop_playback_monitor(server.state)
+        server.server_close()
+
+
+def test_quit_endpoint_stops_playback_monitor() -> None:
+    server = create_server(
+        playback_state_fetcher=lambda: SpotifyPlaybackState(item_uri=None, is_playing=False),
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+
+    try:
+        _start_playback_monitor(server.state, poll_seconds=PLAYBACK_POLL_SECONDS)
+        assert server.state.playback_monitor_thread is not None
+        assert server.state.playback_monitor_thread.is_alive()
+        host, port = server.server_address
+
+        response = json_request("POST", f"http://{host}:{port}/daemon/quit", {})
+
+        assert response["ok"] is True
+        assert server.state.playback_monitor_status == "idle"
+        assert not server.state.playback_monitor_thread.is_alive()
+    finally:
+        stop_test_server(server, thread)
+
+
+def test_session_start_reports_playback_failure() -> None:
+    def fake_recommender(recently_played_track_ids: set[int]) -> DJBlock:
+        return DJBlock(
+            source_id=10,
+            seed_track_id=1,
+            tracks=(DJTrack(track_id=1, role="seed", distance=None),),
+        )
+
+    def fake_track_hydrator(track_ids: tuple[int, ...]) -> list[PlayableTrack]:
+        return [PlayableTrack(1, "spotify:track:1", "Track One", "Artist One")]
+
+    def fake_playback_starter(spotify_uris: tuple[str, ...]) -> None:
+        raise SpotifyNoActiveDeviceError(
+            "No active Spotify device found. Open Spotify on a device, then run /dj start again."
+        )
+
+    server = create_server(
+        catalog_status=CatalogStatus(
+            source_count=1,
+            track_count=MIN_READY_TRACKS,
+            embedding_count=MIN_READY_TRACKS,
+            ready_track_count=MIN_READY_TRACKS,
+        ),
+        recommendation_generator=fake_recommender,
+        track_hydrator=fake_track_hydrator,
+        playback_starter=fake_playback_starter,
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+
+    try:
+        host, port = server.server_address
+
+        response = json_request(
+            "POST",
+            f"http://{host}:{port}/session/start",
+            {"session_id": "test-session"},
+        )
+
+        assert response["ok"] is False
+        assert response["error_code"] == "spotify_no_active_device"
+        assert response["playback"] == {
+            "started": False,
+            "error_code": "spotify_no_active_device",
+            "message": "No active Spotify device found. Open Spotify on a device, then run /dj start again.",
+        }
+    finally:
+        stop_test_server(server, thread)
+
+
+def test_session_start_does_not_play_when_library_is_not_ready() -> None:
+    playback_calls = []
+
+    def fake_recommender(recently_played_track_ids: set[int]) -> DJBlock:
+        raise AssertionError("recommendation should not run")
+
+    def fake_track_hydrator(track_ids: tuple[int, ...]) -> list[PlayableTrack]:
+        raise AssertionError("hydration should not run")
+
+    def fake_playback_starter(spotify_uris: tuple[str, ...]) -> None:
+        playback_calls.append(spotify_uris)
+
+    server = create_server(
+        catalog_status=CatalogStatus(source_count=0, track_count=0, embedding_count=0),
+        recommendation_generator=fake_recommender,
+        track_hydrator=fake_track_hydrator,
+        playback_starter=fake_playback_starter,
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+
+    try:
+        host, port = server.server_address
+
+        response = json_request(
+            "POST",
+            f"http://{host}:{port}/session/start",
+            {"session_id": "test-session"},
+        )
+
+        assert response["ok"] is False
+        assert response["error_code"] == "insufficient_ready_tracks"
+        assert playback_calls == []
     finally:
         stop_test_server(server, thread)
 

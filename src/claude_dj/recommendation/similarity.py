@@ -15,7 +15,7 @@ from claude_dj.storage.db import (
 
 
 MIN_DJ_BLOCK_SIZE = 3
-MAX_DJ_BLOCK_SIZE = 6
+MAX_DJ_BLOCK_SIZE = 8
 
 
 _NEAREST_NEIGHBORS_QUERY = """
@@ -101,6 +101,7 @@ def generate_next_dj_block(
     if not seed_candidates:
         return None
 
+    source_track_ids = {candidate.track_id for candidate in seed_candidates}
     seed_track_id = chooser.choice(seed_candidates).track_id
     target_size = chooser.randint(min_block_size, max_block_size)
     similar_tracks = _find_block_similar_tracks(
@@ -108,6 +109,7 @@ def generate_next_dj_block(
         seed_track_id=seed_track_id,
         limit=target_size - 1,
         excluded_track_ids=excluded,
+        allowed_track_ids=source_track_ids,
     )
     tracks = [DJTrack(track_id=seed_track_id, role="seed", distance=None)]
     tracks.extend(
@@ -154,6 +156,7 @@ def _find_block_similar_tracks(
     seed_track_id: int,
     limit: int,
     excluded_track_ids: set[int],
+    allowed_track_ids: set[int],
 ) -> list[SimilarTrack]:
     if limit <= 0:
         return []
@@ -165,6 +168,8 @@ def _find_block_similar_tracks(
     candidates = find_similar_tracks(db, seed_track_id=seed_track_id, limit=embedded_count)
     selected: list[SimilarTrack] = []
     for candidate in candidates:
+        if candidate.track_id not in allowed_track_ids:
+            continue
         if candidate.track_id in excluded_track_ids:
             continue
         selected.append(candidate)

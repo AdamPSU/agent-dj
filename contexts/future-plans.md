@@ -23,6 +23,10 @@ Open questions:
 
 Do not make audio embeddings mandatory for MVP. The current v1 direction is to sync a user's Spotify playlists, resolve tracks by ISRC, and keep local embeddings behind a provider gate. A provider must support ISRC resolution, expose preview or audio that can be analyzed locally, avoid paid developer-program enrollment for normal users, and allow the intended download/cache/embedding workflow. The current provider sweep found no clean default.
 
+Current prototype exception: the local app is using Deezer previews to prove the end-to-end catalog and recommendation loop. This is a technical prototype choice, not a product-default licensing decision. The current implementation uses local MuQ only, with `OpenMuQ/MuQ-large-msd-iter`, 1024-dimensional embeddings, and 24 kHz preview decoding.
+
+The immediate future work after first playback orchestration is richer Spotify control, not more model/provider research. Useful next steps include skip/stop commands, transfer playback, user feedback, and monitoring/repairing cases where user queue edits, skips, or Spotify queue behavior interrupt a DJ block after the first track.
+
 Safer future architecture:
 
 ```text

@@ -13,6 +13,7 @@ APP_DIR_NAME = ".claude-dj"
 RUNTIME_FILE_NAME = "runtime.json"
 DATABASE_FILE_NAME = "claude-dj.sqlite3"
 SPOTIFY_TOKEN_FILE_NAME = "spotify-token.json"
+SPOTIFY_DEVICE_FILE_NAME = "spotify-device.json"
 DEFAULT_SPOTIFY_REDIRECT_URI = "http://127.0.0.1:8888/callback"
 LOCAL_MUQ_MODEL_NAME = "OpenMuQ/MuQ-large-msd-iter"
 LOCAL_MUQ_DIMENSIONS = 1024
@@ -68,6 +69,11 @@ def get_database_file(app_dir: Path | None = None) -> Path:
 def get_spotify_token_file(app_dir: Path | None = None) -> Path:
     """Return the local Spotify OAuth token cache path."""
     return (app_dir or get_app_dir()) / SPOTIFY_TOKEN_FILE_NAME
+
+
+def get_spotify_device_file(app_dir: Path | None = None) -> Path:
+    """Return the local preferred Spotify device path."""
+    return (app_dir or get_app_dir()) / SPOTIFY_DEVICE_FILE_NAME
 
 
 def get_spotify_config() -> SpotifyConfig:

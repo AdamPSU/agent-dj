@@ -97,6 +97,16 @@ class TrackEmbeddingCandidate:
 
 
 @dataclass(frozen=True)
+class PlayableTrack:
+    """Track metadata needed to start Spotify playback."""
+
+    track_id: int
+    spotify_uri: str
+    title: str
+    artist_name: str
+
+
+@dataclass(frozen=True)
 class PlaylistSourceCandidate:
     """Playlist source that has embedded tracks available for DJ selection."""
 
@@ -380,6 +390,35 @@ def fetch_tracks_needing_embeddings(
         )
         for row in rows
     ]
+
+
+def fetch_tracks_by_ids(db: sqlite3.Connection, track_ids: Sequence[int]) -> list[PlayableTrack]:
+    """Return playable Spotify track metadata in the requested track-id order."""
+    if not track_ids:
+        return []
+
+    unique_track_ids = list(dict.fromkeys(track_ids))
+    placeholders = ", ".join("?" for _ in unique_track_ids)
+    rows = db.execute(
+        f"""
+        SELECT id, spotify_uri, title, artist_name
+        FROM tracks
+        WHERE id IN ({placeholders})
+          AND spotify_uri IS NOT NULL
+          AND spotify_uri != ''
+        """,
+        unique_track_ids,
+    ).fetchall()
+    tracks_by_id = {
+        int(row["id"]): PlayableTrack(
+            track_id=int(row["id"]),
+            spotify_uri=str(row["spotify_uri"]),
+            title=str(row["title"]),
+            artist_name=str(row["artist_name"]),
+        )
+        for row in rows
+    }
+    return [tracks_by_id[track_id] for track_id in unique_track_ids if track_id in tracks_by_id]
 
 
 def fetch_embedded_track_ids(db: sqlite3.Connection) -> set[int]:

@@ -1,12 +1,15 @@
 """CLI command parsing and daemon-call behavior tests."""
 
 import io
+import http.client
 import os
 import threading
 
 from claude_dj import cli
+from claude_dj.adapters.spotify import SpotifyDevice
 from claude_dj.config import ensure_app_dir, get_runtime_file
 from claude_dj.daemon import create_server, write_runtime_file
+from claude_dj.devices import DevicePreference
 from claude_dj.indexing import IndexSummary
 from claude_dj.storage.db import CatalogStatus
 
@@ -121,6 +124,35 @@ def test_status_prints_catalog_sync_and_last_run_details(monkeypatch) -> None:
     )
 
 
+def test_status_prints_playback_monitor_details(monkeypatch) -> None:
+    response = {
+        "host": "127.0.0.1",
+        "port": 63964,
+        "playback": {
+            "status": "failed",
+            "known_track_count": 2,
+            "error": "Spotify denied playback control.",
+        },
+    }
+
+    monkeypatch.setattr(cli, "load_runtime_info", lambda: object())
+    monkeypatch.setattr(cli, "is_daemon_running", lambda runtime_info: True)
+    monkeypatch.setattr(cli, "get_json", lambda runtime_info, path: response)
+    stdout = io.StringIO()
+
+    exit_code = cli.run(["status"], stdout=stdout)
+
+    assert exit_code == 0
+    assert stdout.getvalue() == (
+        "Claude DJ daemon is running on 127.0.0.1:63964.\n"
+        "\n"
+        "Playback:\n"
+        "  Monitor: failed\n"
+        "  Known queue tracks: 2\n"
+        "  Error: Spotify denied playback control.\n"
+    )
+
+
 def test_status_reports_still_loading_when_previews_are_pending(monkeypatch) -> None:
     response = {
         "host": "127.0.0.1",
@@ -188,6 +220,37 @@ def test_start_attaches_to_existing_daemon(monkeypatch, tmp_path) -> None:
         assert "Storing your songs on device" in stdout.getvalue()
     finally:
         stop_test_server(server, thread)
+
+
+def test_start_retries_when_daemon_disconnects_after_status_check(monkeypatch) -> None:
+    response = {
+        "message": "Claude DJ session attached.",
+        "indexing": {"spotify": {"ran": False}},
+    }
+    old_runtime = object()
+    new_runtime = object()
+    post_calls = []
+    spawn_calls = []
+
+    def fake_post_json(runtime_info, path, body, **kwargs):
+        post_calls.append(runtime_info)
+        if len(post_calls) == 1:
+            raise http.client.RemoteDisconnected("Remote end closed connection without response")
+        return response
+
+    monkeypatch.setattr(cli, "load_runtime_info", lambda: old_runtime)
+    monkeypatch.setattr(cli, "is_daemon_running", lambda runtime_info: True)
+    monkeypatch.setattr(cli, "post_json", fake_post_json)
+    monkeypatch.setattr(cli, "spawn_daemon", lambda: spawn_calls.append(True))
+    monkeypatch.setattr(cli, "wait_for_daemon", lambda: new_runtime)
+    stdout = io.StringIO()
+
+    exit_code = cli.run(["start"], stdout=stdout)
+
+    assert exit_code == 0
+    assert spawn_calls == [True]
+    assert post_calls == [old_runtime, new_runtime]
+    assert stdout.getvalue() == "Claude DJ session attached.\nStoring your songs on device.\n"
 
 
 def test_start_prints_spotify_indexing_summary(monkeypatch, tmp_path) -> None:
@@ -295,6 +358,95 @@ def test_start_prints_embedding_generation_summary(monkeypatch) -> None:
 
     assert exit_code == 0
     assert stdout.getvalue() == "Claude DJ session attached.\nStoring your songs on device.\n"
+
+
+def test_start_prints_playback_success(monkeypatch) -> None:
+    response = {
+        "message": "Claude DJ session attached.",
+        "indexing": {"spotify": {"ran": False}},
+        "playback": {
+            "started": True,
+            "track_count": 3,
+            "first_track": {
+                "track_id": 1,
+                "title": "Track One",
+                "artist_name": "Artist One",
+                "spotify_uri": "spotify:track:1",
+            },
+        },
+    }
+
+    monkeypatch.setattr(cli, "load_runtime_info", lambda: object())
+    monkeypatch.setattr(cli, "is_daemon_running", lambda runtime_info: True)
+    monkeypatch.setattr(cli, "post_json", lambda runtime_info, path, body, **kwargs: response)
+    stdout = io.StringIO()
+
+    exit_code = cli.run(["start"], stdout=stdout)
+
+    assert exit_code == 0
+    assert stdout.getvalue() == (
+        "Claude DJ session attached.\n"
+        "Started Claude DJ block: Track One by Artist One + 2 more.\n"
+    )
+
+
+def test_start_prints_targeted_playback_device(monkeypatch) -> None:
+    response = {
+        "message": "Claude DJ session attached.",
+        "indexing": {"spotify": {"ran": False}},
+        "playback": {
+            "started": True,
+            "track_count": 1,
+            "first_track": {
+                "title": "Track One",
+                "artist_name": "Artist One",
+            },
+            "device": {
+                "name": "MacBook",
+                "type": "Computer",
+            },
+            "device_fallback": True,
+            "preferred_device_unavailable": False,
+        },
+    }
+
+    monkeypatch.setattr(cli, "load_runtime_info", lambda: object())
+    monkeypatch.setattr(cli, "is_daemon_running", lambda runtime_info: True)
+    monkeypatch.setattr(cli, "post_json", lambda runtime_info, path, body, **kwargs: response)
+    stdout = io.StringIO()
+
+    exit_code = cli.run(["start"], stdout=stdout)
+
+    assert exit_code == 0
+    assert stdout.getvalue() == (
+        "Claude DJ session attached.\n"
+        "Started Claude DJ block: Track One by Artist One on MacBook.\n"
+    )
+
+
+def test_start_prints_playback_failure(monkeypatch) -> None:
+    response = {
+        "message": "Claude DJ session attached.",
+        "indexing": {"spotify": {"ran": False}},
+        "playback": {
+            "started": False,
+            "error_code": "spotify_no_active_device",
+            "message": "No active Spotify device found. Open Spotify on a device, then run /dj start again.",
+        },
+    }
+
+    monkeypatch.setattr(cli, "load_runtime_info", lambda: object())
+    monkeypatch.setattr(cli, "is_daemon_running", lambda runtime_info: True)
+    monkeypatch.setattr(cli, "post_json", lambda runtime_info, path, body, **kwargs: response)
+    stdout = io.StringIO()
+
+    exit_code = cli.run(["start"], stdout=stdout)
+
+    assert exit_code == 0
+    assert stdout.getvalue() == (
+        "Claude DJ session attached.\n"
+        "No active Spotify device found. Open Spotify on a device, then run /dj start again.\n"
+    )
 
 
 def test_start_prints_spotify_auth_instruction(monkeypatch, tmp_path) -> None:
@@ -436,3 +588,92 @@ def test_spotify_login_runs_auth_flow(monkeypatch, tmp_path) -> None:
     assert calls[0][0].client_id == "client-id"
     assert calls[0][1] == tmp_path / "spotify-token.json"
     assert "Spotify login complete" in stdout.getvalue()
+
+
+def test_devices_lists_available_spotify_devices(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("CLAUDE_DJ_HOME", str(tmp_path))
+    monkeypatch.setattr(
+        cli,
+        "fetch_available_devices_with_token",
+        lambda token_file: [
+            SpotifyDevice(
+                id="device-1",
+                name="MacBook",
+                type="Computer",
+                is_active=False,
+                is_restricted=False,
+            ),
+            SpotifyDevice(
+                id="device-2",
+                name="Living Room",
+                type="Speaker",
+                is_active=True,
+                is_restricted=False,
+            ),
+        ],
+    )
+    monkeypatch.setattr(cli, "load_device_preference", lambda device_file: DevicePreference("device-1", "MacBook", "Computer"))
+    stdout = io.StringIO()
+
+    exit_code = cli.run(["devices"], stdout=stdout)
+
+    assert exit_code == 0
+    assert stdout.getvalue() == (
+        "Spotify devices:\n"
+        "  1. MacBook [Computer] available selected\n"
+        "  2. Living Room [Speaker] active\n"
+    )
+
+
+def test_device_selects_numbered_spotify_device(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("CLAUDE_DJ_HOME", str(tmp_path))
+    saved = []
+    devices = [
+        SpotifyDevice(
+            id="device-1",
+            name="MacBook",
+            type="Computer",
+            is_active=False,
+            is_restricted=False,
+        ),
+        SpotifyDevice(
+            id="device-2",
+            name="Living Room",
+            type="Speaker",
+            is_active=True,
+            is_restricted=False,
+        ),
+    ]
+    monkeypatch.setattr(cli, "fetch_available_devices_with_token", lambda token_file: devices)
+    monkeypatch.setattr(cli, "save_device_preference", lambda device_file, device: saved.append((device_file, device)))
+    stdout = io.StringIO()
+
+    exit_code = cli.run(["device", "2"], stdout=stdout)
+
+    assert exit_code == 0
+    assert saved == [(tmp_path / "spotify-device.json", devices[1])]
+    assert stdout.getvalue() == "Claude DJ playback device set to Living Room.\n"
+
+
+def test_device_rejects_out_of_range_selection(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("CLAUDE_DJ_HOME", str(tmp_path))
+    monkeypatch.setattr(
+        cli,
+        "fetch_available_devices_with_token",
+        lambda token_file: [
+            SpotifyDevice(
+                id="device-1",
+                name="MacBook",
+                type="Computer",
+                is_active=False,
+                is_restricted=False,
+            )
+        ],
+    )
+    stdout = io.StringIO()
+    stderr = io.StringIO()
+
+    exit_code = cli.run(["device", "2"], stdout=stdout, stderr=stderr)
+
+    assert exit_code == 1
+    assert stdout.getvalue() == "Choose a device from /dj devices.\n"

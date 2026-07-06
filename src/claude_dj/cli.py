@@ -6,6 +6,7 @@ This module will parse user commands and talk to the local daemon.
 from pathlib import Path
 from typing import TextIO
 import argparse
+import http.client
 import json
 import subprocess
 import sys
@@ -13,8 +14,15 @@ import time
 import urllib.error
 import urllib.request
 
-from claude_dj.adapters.spotify import perform_spotify_login
-from claude_dj.config import ensure_app_dir, get_runtime_file, get_spotify_config, get_spotify_token_file
+from claude_dj.adapters.spotify import SpotifyAuthError, SpotifyDevice, fetch_available_devices_with_token, perform_spotify_login
+from claude_dj.config import (
+    ensure_app_dir,
+    get_runtime_file,
+    get_spotify_config,
+    get_spotify_device_file,
+    get_spotify_token_file,
+)
+from claude_dj.devices import DevicePreference, load_device_preference, save_device_preference
 from claude_dj.models import RuntimeInfo
 
 
@@ -30,7 +38,8 @@ def main() -> int:
 def run(args: list[str], stdout: TextIO = sys.stdout, stderr: TextIO = sys.stderr) -> int:
     """Run a Claude DJ CLI command."""
     parser = argparse.ArgumentParser(prog="claude-dj")
-    parser.add_argument("command", choices=["start", "sync", "status", "quit", "spotify-login"])
+    parser.add_argument("command", choices=["start", "sync", "status", "quit", "spotify-login", "devices", "device"])
+    parser.add_argument("device_number", nargs="?")
     namespace = parser.parse_args(args)
 
     if namespace.command == "start":
@@ -43,6 +52,10 @@ def run(args: list[str], stdout: TextIO = sys.stdout, stderr: TextIO = sys.stder
         return quit_daemon(stdout=stdout)
     if namespace.command == "spotify-login":
         return spotify_login(stdout=stdout)
+    if namespace.command == "devices":
+        return devices(stdout=stdout)
+    if namespace.command == "device":
+        return device(namespace.device_number, stdout=stdout)
     return 2
 
 
@@ -53,12 +66,22 @@ def start(stdout: TextIO, stderr: TextIO) -> int:
         spawn_daemon()
         runtime_info = wait_for_daemon()
 
-    response = post_json(
-        runtime_info,
-        "/session/start",
-        {"session_id": "local-cli"},
-        timeout_seconds=SESSION_START_TIMEOUT_SECONDS,
-    )
+    try:
+        response = post_json(
+            runtime_info,
+            "/session/start",
+            {"session_id": "local-cli"},
+            timeout_seconds=SESSION_START_TIMEOUT_SECONDS,
+        )
+    except (OSError, TimeoutError, urllib.error.URLError, http.client.RemoteDisconnected):
+        spawn_daemon()
+        runtime_info = wait_for_daemon()
+        response = post_json(
+            runtime_info,
+            "/session/start",
+            {"session_id": "local-cli"},
+            timeout_seconds=SESSION_START_TIMEOUT_SECONDS,
+        )
     stdout.write(f"{response['message']}\n")
     write_start_details(response, stdout)
     return 0
@@ -88,8 +111,35 @@ def write_start_details(response: dict[str, object], stdout: TextIO) -> None:
             stdout.write("Run: /dj spotify-login\n")
         return
 
+    if write_playback_status(response, stdout):
+        return
+
     stdout.write("Storing your songs on device.\n")
     return
+
+
+def write_playback_status(response: dict[str, object], stdout: TextIO) -> bool:
+    """Print playback details returned by session start when available."""
+    playback = _dict_value(response, "playback")
+    if not playback:
+        return False
+
+    if playback.get("started") is True:
+        first_track = _dict_value(playback, "first_track")
+        title = _display(first_track.get("title"))
+        artist_name = _display(first_track.get("artist_name"))
+        more_count = max(_int_value(playback, "track_count") - 1, 0)
+        suffix = f" + {more_count} more" if more_count else ""
+        device_suffix = _playback_device_suffix(playback)
+        stdout.write(f"Started Claude DJ block: {title} by {artist_name}{suffix}{device_suffix}.\n")
+        return True
+
+    message = playback.get("message")
+    if isinstance(message, str) and message:
+        stdout.write(f"{message}\n")
+        return True
+
+    return False
 
 
 def _spotify_indexing(response: dict[str, object]) -> dict[str, object]:
@@ -126,7 +176,8 @@ def write_status_details(response: dict[str, object], stdout: TextIO) -> None:
     sync = _dict_value(response, "sync")
     catalog = _dict_value(response, "catalog")
     indexing = _dict_value(response, "indexing")
-    if not sync and not catalog and not indexing:
+    playback = _dict_value(response, "playback")
+    if not sync and not catalog and not indexing and not playback:
         return
 
     stdout.write("\n")
@@ -141,6 +192,8 @@ def write_status_details(response: dict[str, object], stdout: TextIO) -> None:
         write_readiness_status(catalog, stdout)
     if indexing:
         write_last_run_status(indexing, stdout)
+    if playback:
+        write_playback_monitor_status(playback, stdout)
 
 
 def write_catalog_status(catalog: dict[str, object], indexing: dict[str, object], stdout: TextIO) -> None:
@@ -212,9 +265,25 @@ def write_last_run_status(indexing: dict[str, object], stdout: TextIO) -> None:
         )
 
 
+def write_playback_monitor_status(playback: dict[str, object], stdout: TextIO) -> None:
+    """Print playback monitor status from daemon status."""
+    stdout.write("Playback:\n")
+    stdout.write(f"  Monitor: {_display(playback.get('status'))}\n")
+    stdout.write(f"  Known queue tracks: {_int_value(playback, 'known_track_count')}\n")
+    error = playback.get("error")
+    if isinstance(error, str) and error:
+        stdout.write(f"  Error: {error}\n")
+
+
 def _dict_value(data: dict[str, object], key: str) -> dict[str, object]:
     value = data.get(key)
     return value if isinstance(value, dict) else {}
+
+
+def _playback_device_suffix(playback: dict[str, object]) -> str:
+    device = _dict_value(playback, "device")
+    name = device.get("name")
+    return f" on {name}" if isinstance(name, str) and name else ""
 
 
 def _int_value(data: dict[str, object], key: str) -> int:
@@ -246,6 +315,78 @@ def spotify_login(stdout: TextIO) -> int:
     )
     stdout.write("Spotify login complete.\n")
     return 0
+
+
+def devices(stdout: TextIO) -> int:
+    """List Spotify Connect devices visible to the current account."""
+    try:
+        available_devices = fetch_available_devices_with_token(token_file=get_spotify_token_file())
+    except SpotifyAuthError as exc:
+        stdout.write(f"{exc}\n")
+        return 1
+
+    preference = load_device_preference(get_spotify_device_file())
+    if not available_devices:
+        stdout.write("No Spotify devices found. Open Spotify on a device, then run /dj devices again.\n")
+        return 1
+
+    stdout.write("Spotify devices:\n")
+    for index, spotify_device in enumerate(available_devices, start=1):
+        stdout.write(_spotify_device_line(index, spotify_device, preference))
+    return 0
+
+
+def device(device_number: str | None, stdout: TextIO) -> int:
+    """Persist a preferred Spotify Connect device by list number."""
+    try:
+        selected_number = int(device_number or "")
+    except ValueError:
+        stdout.write("Choose a device from /dj devices.\n")
+        return 1
+
+    try:
+        available_devices = fetch_available_devices_with_token(token_file=get_spotify_token_file())
+    except SpotifyAuthError as exc:
+        stdout.write(f"{exc}\n")
+        return 1
+
+    if selected_number < 1 or selected_number > len(available_devices):
+        stdout.write("Choose a device from /dj devices.\n")
+        return 1
+
+    selected_device = available_devices[selected_number - 1]
+    if selected_device.is_restricted:
+        stdout.write("Choose an unrestricted device from /dj devices.\n")
+        return 1
+
+    save_device_preference(get_spotify_device_file(), selected_device)
+    stdout.write(f"Claude DJ playback device set to {selected_device.name}.\n")
+    return 0
+
+
+def _spotify_device_line(index: int, spotify_device: SpotifyDevice, preference: DevicePreference | None) -> str:
+    status = _spotify_device_statuses(spotify_device, preference)
+    suffix = f" {' '.join(status)}" if status else ""
+    return f"  {index}. {spotify_device.name} [{spotify_device.type}]{suffix}\n"
+
+
+def _spotify_device_statuses(spotify_device: SpotifyDevice, preference: DevicePreference | None) -> list[str]:
+    status: list[str] = []
+    if spotify_device.is_active:
+        status.append("active")
+    elif not spotify_device.is_restricted:
+        status.append("available")
+    if spotify_device.is_restricted:
+        status.append("restricted")
+    if _device_matches_preference(spotify_device, preference):
+        status.append("selected")
+    return status
+
+
+def _device_matches_preference(spotify_device: SpotifyDevice, preference: DevicePreference | None) -> bool:
+    if preference is None:
+        return False
+    return spotify_device.id == preference.id or (spotify_device.name == preference.name and spotify_device.type == preference.type)
 
 
 def load_runtime_info(runtime_file: Path | None = None) -> RuntimeInfo | None:

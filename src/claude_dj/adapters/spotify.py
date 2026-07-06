@@ -3,6 +3,7 @@
 This module will own Spotify auth, playback state, playlist reads, and playback actions.
 """
 
+from collections.abc import Sequence
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from dataclasses import dataclass
 from pathlib import Path
@@ -15,7 +16,7 @@ import urllib.error
 import urllib.request
 import webbrowser
 
-from claude_dj.config import SpotifyConfig
+from claude_dj.config import MissingConfigError, SpotifyConfig, get_spotify_config
 
 
 DEFAULT_SPOTIFY_SCOPES = (
@@ -43,6 +44,18 @@ class SpotifyAPIForbiddenError(RuntimeError):
     """Raised when Spotify denies access to a requested API resource."""
 
 
+class SpotifyPlaybackError(RuntimeError):
+    """Raised when Spotify cannot start playback."""
+
+
+class SpotifyNoActiveDeviceError(SpotifyPlaybackError):
+    """Raised when Spotify has no active device for playback."""
+
+
+class SpotifyPlaybackForbiddenError(SpotifyPlaybackError):
+    """Raised when Spotify denies playback control."""
+
+
 @dataclass(frozen=True)
 class SpotifyPlaylist:
     """Normalized Spotify playlist metadata."""
@@ -65,6 +78,25 @@ class SpotifyTrack:
     duration_ms: int | None
     explicit: bool
     popularity: int | None
+
+
+@dataclass(frozen=True)
+class SpotifyDevice:
+    """Spotify Connect device available to the current user."""
+
+    id: str
+    name: str
+    type: str
+    is_active: bool
+    is_restricted: bool
+
+
+@dataclass(frozen=True)
+class SpotifyPlaybackState:
+    """Current Spotify playback state needed by the DJ monitor."""
+
+    item_uri: str | None
+    is_playing: bool
 
 
 @dataclass(frozen=True)
@@ -234,6 +266,256 @@ def refresh_access_token(
     return refreshed
 
 
+def start_playback(
+    access_token: str,
+    spotify_uris: Sequence[str],
+    *,
+    device_id: str | None = None,
+    urlopen=urllib.request.urlopen,
+) -> None:
+    """Interrupt current Spotify playback and start the provided track URIs."""
+    if not spotify_uris:
+        raise ValueError("At least one Spotify URI is required to start playback.")
+
+    url = f"{API_BASE_URL}/me/player/play"
+    if device_id:
+        url = f"{url}?{urlencode({'device_id': device_id})}"
+    request = urllib.request.Request(
+        url,
+        data=json.dumps({"uris": list(spotify_uris)}).encode("utf-8"),
+        headers={
+            "Authorization": f"Bearer {access_token}",
+            "Content-Type": "application/json",
+        },
+        method="PUT",
+    )
+    try:
+        with urlopen(request, timeout=REQUEST_TIMEOUT_SECONDS):
+            return
+    except urllib.error.HTTPError as exc:
+        if exc.code == 401:
+            raise SpotifyAPIAuthError("Spotify access token is expired or invalid.") from exc
+        if exc.code == 403:
+            raise SpotifyPlaybackForbiddenError("Spotify denied playback control.") from exc
+        if exc.code == 404:
+            raise SpotifyNoActiveDeviceError(
+                "No active Spotify device found. Open Spotify on a device, then run /dj start again."
+            ) from exc
+        raise SpotifyPlaybackError("Spotify could not start playback.") from exc
+
+
+def start_playback_with_token(
+    *,
+    token_file: Path,
+    spotify_uris: Sequence[str],
+    device_id: str | None = None,
+    config: SpotifyConfig | None = None,
+    urlopen=urllib.request.urlopen,
+) -> None:
+    """Start Spotify playback using the saved token cache, refreshing once on 401."""
+    try:
+        token = load_token(token_file)
+    except SpotifyAuthError as exc:
+        raise SpotifyAuthError("Spotify login is required before playback. Run /dj spotify-login.") from exc
+
+    try:
+        start_playback(
+            str(token["access_token"]),
+            spotify_uris,
+            device_id=device_id,
+            urlopen=urlopen,
+        )
+    except SpotifyAPIAuthError:
+        try:
+            resolved_config = config or get_spotify_config()
+        except MissingConfigError as exc:
+            raise SpotifyAuthError("Spotify login expired. Run /dj spotify-login.") from exc
+        refreshed_token = refresh_access_token(
+            config=resolved_config,
+            token_file=token_file,
+            token=token,
+            urlopen=urlopen,
+        )
+        start_playback(
+            str(refreshed_token["access_token"]),
+            spotify_uris,
+            device_id=device_id,
+            urlopen=urlopen,
+        )
+
+
+def fetch_available_devices(
+    access_token: str,
+    urlopen=urllib.request.urlopen,
+) -> list[SpotifyDevice]:
+    """Fetch Spotify Connect devices visible to the current user."""
+    payload = _get_json(f"{API_BASE_URL}/me/player/devices", access_token=access_token, urlopen=urlopen)
+    devices = payload.get("devices")
+    if not isinstance(devices, list):
+        return []
+
+    normalized: list[SpotifyDevice] = []
+    for item in devices:
+        device = _normalize_device(item)
+        if device is not None:
+            normalized.append(device)
+    return normalized
+
+
+def fetch_available_devices_with_token(
+    *,
+    token_file: Path,
+    config: SpotifyConfig | None = None,
+    urlopen=urllib.request.urlopen,
+) -> list[SpotifyDevice]:
+    """Fetch available devices using the saved token cache, refreshing once on 401."""
+    try:
+        token = load_token(token_file)
+    except SpotifyAuthError as exc:
+        raise SpotifyAuthError("Spotify login is required before listing devices. Run /dj spotify-login.") from exc
+
+    try:
+        return fetch_available_devices(str(token["access_token"]), urlopen=urlopen)
+    except SpotifyAPIAuthError:
+        try:
+            resolved_config = config or get_spotify_config()
+        except MissingConfigError as exc:
+            raise SpotifyAuthError("Spotify login expired. Run /dj spotify-login.") from exc
+        refreshed_token = refresh_access_token(
+            config=resolved_config,
+            token_file=token_file,
+            token=token,
+            urlopen=urlopen,
+        )
+        return fetch_available_devices(str(refreshed_token["access_token"]), urlopen=urlopen)
+
+
+def fetch_playback_state(
+    access_token: str,
+    urlopen=urllib.request.urlopen,
+) -> SpotifyPlaybackState:
+    """Fetch the current Spotify playback state."""
+    request = urllib.request.Request(
+        f"{API_BASE_URL}/me/player",
+        headers={"Authorization": f"Bearer {access_token}"},
+        method="GET",
+    )
+    try:
+        with urlopen(request, timeout=REQUEST_TIMEOUT_SECONDS) as response:
+            if getattr(response, "status", None) == 204:
+                return SpotifyPlaybackState(item_uri=None, is_playing=False)
+            data = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        if exc.code == 401:
+            raise SpotifyAPIAuthError("Spotify access token is expired or invalid.") from exc
+        if exc.code == 403:
+            raise SpotifyAPIForbiddenError("Spotify denied access to the requested resource.") from exc
+        raise
+    return _normalize_playback_state(data if isinstance(data, dict) else {})
+
+
+def fetch_playback_state_with_token(
+    *,
+    token_file: Path,
+    config: SpotifyConfig | None = None,
+    urlopen=urllib.request.urlopen,
+) -> SpotifyPlaybackState:
+    """Fetch playback state using the saved token cache, refreshing once on 401."""
+    try:
+        token = load_token(token_file)
+    except SpotifyAuthError as exc:
+        raise SpotifyAuthError("Spotify login is required before reading playback state. Run /dj spotify-login.") from exc
+
+    try:
+        return fetch_playback_state(str(token["access_token"]), urlopen=urlopen)
+    except SpotifyAPIAuthError:
+        try:
+            resolved_config = config or get_spotify_config()
+        except MissingConfigError as exc:
+            raise SpotifyAuthError("Spotify login expired. Run /dj spotify-login.") from exc
+        refreshed_token = refresh_access_token(
+            config=resolved_config,
+            token_file=token_file,
+            token=token,
+            urlopen=urlopen,
+        )
+        return fetch_playback_state(str(refreshed_token["access_token"]), urlopen=urlopen)
+
+
+def add_to_queue(
+    access_token: str,
+    spotify_uri: str,
+    *,
+    device_id: str | None = None,
+    urlopen=urllib.request.urlopen,
+) -> None:
+    """Add one Spotify URI to the user's playback queue."""
+    if not spotify_uri:
+        raise ValueError("A Spotify URI is required to add to the queue.")
+
+    query = {"uri": spotify_uri}
+    if device_id:
+        query["device_id"] = device_id
+    request = urllib.request.Request(
+        f"{API_BASE_URL}/me/player/queue?{urlencode(query)}",
+        headers={"Authorization": f"Bearer {access_token}"},
+        method="POST",
+    )
+    try:
+        with urlopen(request, timeout=REQUEST_TIMEOUT_SECONDS):
+            return
+    except urllib.error.HTTPError as exc:
+        if exc.code == 401:
+            raise SpotifyAPIAuthError("Spotify access token is expired or invalid.") from exc
+        if exc.code == 403:
+            raise SpotifyPlaybackForbiddenError("Spotify denied playback control.") from exc
+        if exc.code == 404:
+            raise SpotifyNoActiveDeviceError(
+                "No active Spotify device found. Open Spotify on a device, then run /dj start again."
+            ) from exc
+        raise SpotifyPlaybackError("Spotify could not add a track to the playback queue.") from exc
+
+
+def add_to_queue_with_token(
+    *,
+    token_file: Path,
+    spotify_uri: str,
+    device_id: str | None = None,
+    config: SpotifyConfig | None = None,
+    urlopen=urllib.request.urlopen,
+) -> None:
+    """Add a URI to the playback queue using the saved token cache, refreshing once on 401."""
+    try:
+        token = load_token(token_file)
+    except SpotifyAuthError as exc:
+        raise SpotifyAuthError("Spotify login is required before queueing playback. Run /dj spotify-login.") from exc
+
+    try:
+        add_to_queue(
+            str(token["access_token"]),
+            spotify_uri,
+            device_id=device_id,
+            urlopen=urlopen,
+        )
+    except SpotifyAPIAuthError:
+        try:
+            resolved_config = config or get_spotify_config()
+        except MissingConfigError as exc:
+            raise SpotifyAuthError("Spotify login expired. Run /dj spotify-login.") from exc
+        refreshed_token = refresh_access_token(
+            config=resolved_config,
+            token_file=token_file,
+            token=token,
+            urlopen=urlopen,
+        )
+        add_to_queue(
+            str(refreshed_token["access_token"]),
+            spotify_uri,
+            device_id=device_id,
+            urlopen=urlopen,
+        )
+
+
 def fetch_all_playlists(
     access_token: str,
     urlopen=urllib.request.urlopen,
@@ -384,6 +666,36 @@ def _normalize_playlist_track(item: object, position: int) -> SpotifyPlaylistTra
         ),
         position=position,
         added_at=added_at if isinstance(added_at, str) else None,
+    )
+
+
+def _normalize_device(item: object) -> SpotifyDevice | None:
+    if not isinstance(item, dict):
+        return None
+
+    device_id = item.get("id")
+    name = item.get("name")
+    device_type = item.get("type")
+    if not all(isinstance(value, str) and value for value in (device_id, name, device_type)):
+        return None
+
+    return SpotifyDevice(
+        id=str(device_id),
+        name=str(name),
+        type=str(device_type),
+        is_active=bool(item.get("is_active", False)),
+        is_restricted=bool(item.get("is_restricted", False)),
+    )
+
+
+def _normalize_playback_state(payload: dict[str, object]) -> SpotifyPlaybackState:
+    item_uri = None
+    item = payload.get("item")
+    if isinstance(item, dict) and item.get("type") == "track" and isinstance(item.get("uri"), str):
+        item_uri = str(item["uri"])
+    return SpotifyPlaybackState(
+        item_uri=item_uri,
+        is_playing=bool(payload.get("is_playing", False)),
     )
 
 
