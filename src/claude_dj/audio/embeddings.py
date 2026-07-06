@@ -24,7 +24,6 @@ from claude_dj.storage.db import (
 
 
 MUQ_SAMPLE_RATE = 24_000
-CLAP_SAMPLE_RATE = 48_000
 MAX_PREVIEW_BYTES = 10 * 1024 * 1024
 REQUEST_TIMEOUT_SECONDS = 10
 PREVIEW_REQUEST_HEADERS = {"User-Agent": "Mozilla/5.0 Claude-DJ/0.1"}
@@ -32,10 +31,6 @@ PREVIEW_REQUEST_HEADERS = {"User-Agent": "Mozilla/5.0 Claude-DJ/0.1"}
 
 class PreviewEmbeddingError(RuntimeError):
     """Expected per-preview failure while generating an audio embedding."""
-
-
-class EmbeddingModelError(PreviewEmbeddingError):
-    """Embedding model initialization or inference failure."""
 
 
 @dataclass(frozen=True)
@@ -142,53 +137,11 @@ def generate_audio_embeddings(
 
 def create_preview_embedder(config: EmbeddingConfig) -> PreviewEmbedder:
     """Create the configured embedding provider."""
-    primary = LocalMuQEmbedder(
+    return LocalMuQEmbedder(
         model_name=config.model_name,
         model_version=config.model_version,
         dimensions=config.dimensions,
     )
-    fallback = LocalClapEmbedder(
-        model_name=config.fallback_model_name or config.model_name,
-        model_version=config.fallback_model_version,
-        dimensions=config.fallback_dimensions or config.dimensions,
-    )
-    return FallbackPreviewEmbedder(primary=primary, fallback=fallback)
-
-
-class FallbackPreviewEmbedder(PreviewEmbedder):
-    """Try a primary local model, then stick to the fallback if the model fails."""
-
-    def __init__(self, *, primary: PreviewEmbedder, fallback: PreviewEmbedder) -> None:
-        self._primary = primary
-        self._fallback = fallback
-        self._active = primary
-
-    @property
-    def model_name(self) -> str:
-        return self._active.model_name
-
-    @property
-    def model_version(self) -> str | None:
-        return self._active.model_version
-
-    @property
-    def dimensions(self) -> int:
-        return self._active.dimensions
-
-    @property
-    def last_timing(self) -> dict[str, float] | None:
-        timing = getattr(self._active, "last_timing", None)
-        return timing if isinstance(timing, dict) else None
-
-    def embed(self, candidate: TrackEmbeddingCandidate) -> list[float]:
-        try:
-            return self._active.embed(candidate)
-        except EmbeddingModelError:
-            if self._active is self._fallback:
-                raise
-            embedding = self._fallback.embed(candidate)
-            self._active = self._fallback
-            return embedding
 
 
 class LocalMuQEmbedder(PreviewEmbedder):
@@ -231,7 +184,7 @@ class LocalMuQEmbedder(PreviewEmbedder):
                 embedding_tensor = torch.nn.functional.normalize(embedding_tensor, p=2.0, dim=0)
                 embedding_tensor = embedding_tensor.detach().cpu().float()
         except (RuntimeError, ValueError) as exc:
-            raise EmbeddingModelError("Could not generate MuQ embedding.") from exc
+            raise PreviewEmbeddingError("Could not generate MuQ embedding.") from exc
         inference_seconds = time.perf_counter() - inference_started_at
         self.last_timing = {"inference_seconds": inference_seconds}
         if self._model_load_seconds is not None:
@@ -252,67 +205,9 @@ class LocalMuQEmbedder(PreviewEmbedder):
             self._device = _select_torch_device(torch)
             self._model = MuQ.from_pretrained(self.model_name).to(self._device).float().eval()
         except (ImportError, OSError, RuntimeError, ValueError) as exc:
-            raise EmbeddingModelError("Could not initialize MuQ embedding model.") from exc
+            raise PreviewEmbeddingError("Could not initialize MuQ embedding model.") from exc
         self._model_load_seconds = time.perf_counter() - started_at
         return self._model, self._device
-
-
-class LocalClapEmbedder(PreviewEmbedder):
-    """Local LAION CLAP audio embedder."""
-
-    def __init__(
-        self,
-        *,
-        model_name: str,
-        model_version: str | None,
-        dimensions: int,
-        urlopen=urllib.request.urlopen,
-    ) -> None:
-        self.model_name = model_name
-        self.model_version = model_version
-        self.dimensions = dimensions
-        self.urlopen = urlopen
-        self._model = None
-        self._processor = None
-        self._device: str | None = None
-
-    def embed(self, candidate: TrackEmbeddingCandidate) -> list[float]:
-        waveform = _decode_preview_bytes(
-            _download_preview_bytes(candidate.preview_url, urlopen=self.urlopen),
-            sample_rate=CLAP_SAMPLE_RATE,
-        )
-        return self._embed_waveform(waveform)
-
-    def _embed_waveform(self, waveform: np.ndarray) -> list[float]:
-        import torch
-
-        model, processor, device = self._load_model()
-        try:
-            inputs = processor(audio=waveform, sampling_rate=CLAP_SAMPLE_RATE, return_tensors="pt")
-            inputs = {key: value.to(device) for key, value in inputs.items()}
-            with torch.no_grad():
-                audio_features = model.get_audio_features(**inputs)
-                embedding_tensor = audio_features.pooler_output.squeeze(0)
-                embedding_tensor = torch.nn.functional.normalize(embedding_tensor, p=2.0, dim=0)
-                embedding_tensor = embedding_tensor.detach().cpu().float()
-        except (RuntimeError, ValueError) as exc:
-            raise EmbeddingModelError("Could not generate CLAP embedding.") from exc
-        return embedding_tensor.tolist()
-
-    def _load_model(self):
-        if self._model is not None and self._processor is not None and self._device is not None:
-            return self._model, self._processor, self._device
-
-        try:
-            import torch
-            from transformers import ClapModel, ClapProcessor
-
-            self._device = _select_torch_device(torch)
-            self._processor = ClapProcessor.from_pretrained(self.model_name)
-            self._model = ClapModel.from_pretrained(self.model_name).to(self._device).eval()
-        except (ImportError, OSError, RuntimeError, ValueError) as exc:
-            raise EmbeddingModelError("Could not initialize CLAP embedding model.") from exc
-        return self._model, self._processor, self._device
 
 
 def _select_torch_device(torch_module) -> str:

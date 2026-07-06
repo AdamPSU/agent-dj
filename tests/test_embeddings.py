@@ -4,9 +4,8 @@ import pytest
 import torch
 
 import claude_dj.audio.embeddings as embedding_module
-from claude_dj.config import LOCAL_CLAP_MODEL_NAME, LOCAL_MUQ_MODEL_NAME
+from claude_dj.config import LOCAL_MUQ_MODEL_NAME
 from claude_dj.audio.embeddings import (
-    LocalClapEmbedder,
     PreviewEmbeddingError,
     generate_audio_embeddings,
 )
@@ -61,29 +60,13 @@ def add_matched_track(db, *, index: int = 1) -> int:
     return track_id
 
 
-def test_local_clap_embedder_uses_pooler_output() -> None:
-    class FakeProcessor:
-        def __call__(self, *, audio, sampling_rate, return_tensors):
-            assert sampling_rate == 48_000
-            assert return_tensors == "pt"
-            return {"input_features": torch.tensor([[1.0, 2.0]])}
+def test_create_preview_embedder_returns_local_muq_embedder() -> None:
+    assert hasattr(embedding_module, "LocalMuQEmbedder")
 
-    class FakeModel:
-        def get_audio_features(self, **inputs):
-            assert "input_features" in inputs
-            return SimpleNamespace(pooler_output=torch.tensor([[3.0, 4.0] + [0.0] * 510]))
+    embedder = embedding_module.create_preview_embedder(embedding_module.get_embedding_config())
 
-    embedder = LocalClapEmbedder(model_name=LOCAL_CLAP_MODEL_NAME, model_version=None, dimensions=512)
-    embedder._processor = FakeProcessor()
-    embedder._model = FakeModel()
-    embedder._device = "cpu"
-
-    embedding = embedder._embed_waveform(torch.tensor([0.1, 0.2]).numpy())
-
-    assert len(embedding) == 512
-    assert embedding[0] == pytest.approx(0.6)
-    assert embedding[1] == pytest.approx(0.8)
-    assert sum(value * value for value in embedding) == pytest.approx(1.0)
+    assert isinstance(embedder, embedding_module.LocalMuQEmbedder)
+    assert embedder.model_name == LOCAL_MUQ_MODEL_NAME
 
 
 def test_local_muq_embedder_uses_last_hidden_state_mean() -> None:
@@ -106,82 +89,6 @@ def test_local_muq_embedder_uses_last_hidden_state_mean() -> None:
     assert embedding[0] == pytest.approx(0.6)
     assert embedding[1] == pytest.approx(0.8)
     assert sum(value * value for value in embedding) == pytest.approx(1.0)
-
-
-def test_fallback_embedder_switches_to_clap_when_muq_fails() -> None:
-    assert hasattr(embedding_module, "EmbeddingModelError")
-    assert hasattr(embedding_module, "FallbackPreviewEmbedder")
-    EmbeddingModelError = embedding_module.EmbeddingModelError
-    FallbackPreviewEmbedder = embedding_module.FallbackPreviewEmbedder
-
-    class FailingMuQEmbedder:
-        model_name = LOCAL_MUQ_MODEL_NAME
-        model_version = None
-        dimensions = 1024
-
-        def __init__(self) -> None:
-            self.calls = []
-
-        def embed(self, candidate):
-            self.calls.append(candidate.track_id)
-            raise EmbeddingModelError("MuQ unavailable")
-
-    class RecordingClapEmbedder:
-        model_name = LOCAL_CLAP_MODEL_NAME
-        model_version = None
-        dimensions = 512
-
-        def __init__(self) -> None:
-            self.calls = []
-
-        def embed(self, candidate):
-            self.calls.append(candidate.track_id)
-            return [1.0] + [0.0] * 511
-
-    primary = FailingMuQEmbedder()
-    fallback = RecordingClapEmbedder()
-    embedder = FallbackPreviewEmbedder(primary=primary, fallback=fallback)
-
-    first_embedding = embedder.embed(TrackEmbeddingCandidate(track_id=1, preview_url="https://example.com/one.mp3"))
-    second_embedding = embedder.embed(TrackEmbeddingCandidate(track_id=2, preview_url="https://example.com/two.mp3"))
-
-    assert first_embedding == [1.0] + [0.0] * 511
-    assert second_embedding == [1.0] + [0.0] * 511
-    assert primary.calls == [1]
-    assert fallback.calls == [1, 2]
-    assert embedder.model_name == LOCAL_CLAP_MODEL_NAME
-    assert embedder.dimensions == 512
-
-
-def test_fallback_embedder_keeps_primary_metadata_when_fallback_fails() -> None:
-    assert hasattr(embedding_module, "EmbeddingModelError")
-    assert hasattr(embedding_module, "FallbackPreviewEmbedder")
-    EmbeddingModelError = embedding_module.EmbeddingModelError
-    FallbackPreviewEmbedder = embedding_module.FallbackPreviewEmbedder
-
-    class FailingMuQEmbedder:
-        model_name = LOCAL_MUQ_MODEL_NAME
-        model_version = None
-        dimensions = 1024
-
-        def embed(self, candidate):
-            raise EmbeddingModelError("MuQ unavailable")
-
-    class FailingClapEmbedder:
-        model_name = LOCAL_CLAP_MODEL_NAME
-        model_version = None
-        dimensions = 512
-
-        def embed(self, candidate):
-            raise EmbeddingModelError("CLAP unavailable")
-
-    embedder = FallbackPreviewEmbedder(primary=FailingMuQEmbedder(), fallback=FailingClapEmbedder())
-
-    with pytest.raises(EmbeddingModelError):
-        embedder.embed(TrackEmbeddingCandidate(track_id=1, preview_url="https://example.com/one.mp3"))
-
-    assert embedder.model_name == LOCAL_MUQ_MODEL_NAME
-    assert embedder.dimensions == 1024
 
 
 def test_generate_audio_embeddings_stores_local_muq_vectors(tmp_path) -> None:
@@ -223,11 +130,11 @@ def test_generate_audio_embeddings_embeds_tracks_one_at_a_time(tmp_path) -> None
     db = connect(tmp_path / "claude-dj.sqlite3")
 
     try:
-        initialize_schema(db, dimensions=512)
+        initialize_schema(db, dimensions=1024)
         first_track_id = add_matched_track(db, index=1)
         second_track_id = add_matched_track(db, index=2)
         db.commit()
-        embedder = FakeEmbedder(model_name=LOCAL_CLAP_MODEL_NAME, dimensions=512)
+        embedder = FakeEmbedder(model_name=LOCAL_MUQ_MODEL_NAME, dimensions=1024)
 
         summary = generate_audio_embeddings(db, embedder=embedder)
 
@@ -238,38 +145,14 @@ def test_generate_audio_embeddings_embeds_tracks_one_at_a_time(tmp_path) -> None
         db.close()
 
 
-def test_generate_audio_embeddings_uses_local_clap_dimensions(tmp_path) -> None:
-    db = connect(tmp_path / "claude-dj.sqlite3")
-
-    try:
-        initialize_schema(db, dimensions=512)
-        track_id = add_matched_track(db)
-        db.commit()
-        embedder = FakeEmbedder(model_name=LOCAL_CLAP_MODEL_NAME, dimensions=512)
-
-        summary = generate_audio_embeddings(db, embedder=embedder)
-
-        metadata = db.execute(
-            "SELECT * FROM embedding_metadata WHERE track_id = ?",
-            (track_id,),
-        ).fetchone()
-
-        assert summary.embedded_count == 1
-        assert summary.failed_count == 0
-        assert metadata["model_name"] == LOCAL_CLAP_MODEL_NAME
-        assert metadata["dimensions"] == 512
-    finally:
-        db.close()
-
-
 def test_generate_audio_embeddings_counts_embedder_failures(tmp_path) -> None:
     db = connect(tmp_path / "claude-dj.sqlite3")
 
     try:
-        initialize_schema(db, dimensions=512)
+        initialize_schema(db, dimensions=1024)
         track_id = add_matched_track(db)
         db.commit()
-        embedder = FakeEmbedder(model_name=LOCAL_CLAP_MODEL_NAME, dimensions=512, failures=[track_id])
+        embedder = FakeEmbedder(model_name=LOCAL_MUQ_MODEL_NAME, dimensions=1024, failures=[track_id])
 
         summary = generate_audio_embeddings(db, embedder=embedder)
 

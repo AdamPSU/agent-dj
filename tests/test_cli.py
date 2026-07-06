@@ -236,7 +236,7 @@ def test_start_prints_spotify_auth_instruction(monkeypatch, tmp_path) -> None:
 
     assert exit_code == 0
     assert "Spotify login is required before playlist indexing." in stdout.getvalue()
-    assert "Run: uv run claude-dj spotify-login" in stdout.getvalue()
+    assert "Run: /dj spotify-login" in stdout.getvalue()
 
 
 def test_start_prints_spotify_access_denied(monkeypatch, tmp_path) -> None:
@@ -267,7 +267,7 @@ def test_start_prints_spotify_access_denied(monkeypatch, tmp_path) -> None:
 
     assert exit_code == 0
     assert "Spotify denied playlist track access." in stdout.getvalue()
-    assert "Run: uv run claude-dj spotify-login" not in stdout.getvalue()
+    assert "Run: /dj spotify-login" not in stdout.getvalue()
     assert "Indexing all Spotify playlists is needed" not in stdout.getvalue()
 
 

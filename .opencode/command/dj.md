@@ -1,16 +1,16 @@
 ---
-description: Run Claude DJ lifecycle commands through the local Python CLI.
+description: Run Claude DJ lifecycle commands through the installed local CLI.
 ---
 
-Run the Claude DJ CLI from the project root.
+Run the installed Claude DJ CLI.
 
-User command: 
+User command:
 
-/dj `$ARGUMENTS$` 
+/dj `$ARGUMENTS`
 
 Command handling:
 
-- If the command is empty (/dj ``), run `uv run claude-dj status`.
-- Otherwise, run `uv run claude-dj $ARGUMENTS`.
+- If the command is empty (/dj ``), run `claude-dj status`.
+- Otherwise, run `claude-dj $ARGUMENTS`.
 
 Return the command output concisely. Do not add extra explanation unless the command fails.

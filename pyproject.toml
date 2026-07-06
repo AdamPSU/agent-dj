@@ -10,11 +10,11 @@ dependencies = [
     "sqlite-vec>=0.1.9",
     "soundfile>=0.13.1",
     "torch>=2.8.0",
-    "transformers>=5.12.1",
 ]
 
 [project.scripts]
 claude-dj = "claude_dj.cli:main"
+claude-dj-install = "claude_dj.installer:main"
 
 [dependency-groups]
 dev = [

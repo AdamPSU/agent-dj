@@ -395,52 +395,12 @@ def _session_start_error_code(
 
 
 def _initialize_embedding_schema(schema_db, embedding_config) -> None:
-    dimensions, model_name, model_version = _embedding_schema_metadata(schema_db, embedding_config)
     initialize_schema(
         schema_db,
-        dimensions=dimensions,
-        model_name=model_name,
-        model_version=model_version,
+        dimensions=embedding_config.dimensions,
+        model_name=embedding_config.model_name,
+        model_version=embedding_config.model_version,
     )
-
-
-def _embedding_schema_metadata(schema_db, embedding_config) -> tuple[int, str | None, str | None]:
-    if not _table_exists(schema_db, "track_embeddings"):
-        return embedding_config.dimensions, embedding_config.model_name, embedding_config.model_version
-
-    if _table_exists(schema_db, "embedding_metadata"):
-        metadata = schema_db.execute(
-            "SELECT model_name, model_version, dimensions FROM embedding_metadata ORDER BY track_id LIMIT 1"
-        ).fetchone()
-        if metadata is not None:
-            return int(metadata["dimensions"]), metadata["model_name"], metadata["model_version"]
-
-    dimensions = _embedding_table_dimensions(schema_db)
-    return dimensions or embedding_config.dimensions, None, None
-
-
-def _table_exists(schema_db, table_name: str) -> bool:
-    row = schema_db.execute(
-        "SELECT 1 FROM sqlite_master WHERE type IN ('table', 'virtual table') AND name = ?",
-        (table_name,),
-    ).fetchone()
-    return row is not None
-
-
-def _embedding_table_dimensions(schema_db) -> int | None:
-    row = schema_db.execute("SELECT sql FROM sqlite_master WHERE name = 'track_embeddings'").fetchone()
-    sql = str(row["sql"] or "") if row is not None else ""
-    marker = "FLOAT["
-    start = sql.find(marker)
-    if start == -1:
-        return None
-    end = sql.find("]", start + len(marker))
-    if end == -1:
-        return None
-    try:
-        return int(sql[start + len(marker) : end])
-    except ValueError:
-        return None
 
 
 def run_daemon() -> int:

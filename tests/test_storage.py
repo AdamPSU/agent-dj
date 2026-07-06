@@ -172,7 +172,7 @@ def test_initialize_schema_replaces_incompatible_embedding_model_with_same_dimen
         initialize_schema(
             db,
             dimensions=EMBEDDING_DIMENSIONS,
-            model_name="laion/clap-htsat-fused",
+            model_name="legacy-audio-model",
             model_version=None,
         )
 

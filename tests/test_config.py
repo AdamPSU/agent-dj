@@ -4,8 +4,6 @@ import pytest
 
 from claude_dj.config import (
     DEFAULT_SPOTIFY_REDIRECT_URI,
-    LOCAL_CLAP_DIMENSIONS,
-    LOCAL_CLAP_MODEL_NAME,
     LOCAL_MUQ_DIMENSIONS,
     LOCAL_MUQ_MODEL_NAME,
     MissingConfigError,
@@ -71,11 +69,10 @@ def test_spotify_config_requires_client_id(monkeypatch) -> None:
         get_spotify_config()
 
 
-def test_embedding_config_defaults_to_local_muq_with_clap_fallback() -> None:
+def test_embedding_config_defaults_to_local_muq_only() -> None:
     config = get_embedding_config()
 
     assert config.provider == "local"
     assert config.model_name == LOCAL_MUQ_MODEL_NAME
     assert config.dimensions == LOCAL_MUQ_DIMENSIONS
-    assert getattr(config, "fallback_model_name", None) == LOCAL_CLAP_MODEL_NAME
-    assert getattr(config, "fallback_dimensions", None) == LOCAL_CLAP_DIMENSIONS
+    assert set(config.__dataclass_fields__) == {"provider", "model_name", "model_version", "dimensions"}

@@ -10,32 +10,35 @@ import pytest
 
 from claude_dj.daemon import MIN_READY_TRACKS, create_server, write_runtime_file
 from claude_dj.audio.embeddings import EmbeddingGenerationSummary
-from claude_dj.config import LOCAL_MUQ_DIMENSIONS, LOCAL_MUQ_MODEL_NAME
+from claude_dj.config import LOCAL_MUQ_DIMENSIONS, LOCAL_MUQ_MODEL_NAME, get_embedding_config
 from claude_dj.audio.previews import PreviewResolutionSummary
 from claude_dj.indexing import (
     IndexSummary,
     SpotifyIndexingAccessDenied,
     SpotifyIndexingAuthRequired,
 )
-import claude_dj.daemon as daemon_module
 from claude_dj.recommendation.similarity import DJBlock, DJTrack
 from claude_dj.storage.db import CatalogStatus, connect, initialize_schema, upsert_track, upsert_track_embedding
-from claude_dj.config import get_embedding_config, LOCAL_CLAP_DIMENSIONS, LOCAL_CLAP_MODEL_NAME
+
+
+LEGACY_EMBEDDING_MODEL_NAME = "legacy-audio-model"
+LEGACY_EMBEDDING_DIMENSIONS = 512
 
 
 def test_min_ready_tracks_for_dj_start_is_30() -> None:
     assert MIN_READY_TRACKS == 30
 
 
-def test_daemon_schema_initialization_preserves_fallback_embedding_model(tmp_path) -> None:
-    assert hasattr(daemon_module, "_initialize_embedding_schema")
+def test_daemon_schema_initialization_invalidates_legacy_embeddings(tmp_path) -> None:
+    from claude_dj.daemon import _initialize_embedding_schema
+
     db = connect(tmp_path / "claude-dj.sqlite3")
 
     try:
         initialize_schema(
             db,
-            dimensions=LOCAL_CLAP_DIMENSIONS,
-            model_name=LOCAL_CLAP_MODEL_NAME,
+            dimensions=LEGACY_EMBEDDING_DIMENSIONS,
+            model_name=LEGACY_EMBEDDING_MODEL_NAME,
             model_version=None,
         )
         track_id = upsert_track(
@@ -43,7 +46,7 @@ def test_daemon_schema_initialization_preserves_fallback_embedding_model(tmp_pat
             spotify_track_id="spotify-track-1",
             spotify_uri="spotify:track:1",
             isrc="US123",
-            title="Fallback Track",
+            title="Legacy Track",
             artist_name="Artist",
             album_name=None,
             duration_ms=None,
@@ -53,23 +56,20 @@ def test_daemon_schema_initialization_preserves_fallback_embedding_model(tmp_pat
         upsert_track_embedding(
             db,
             track_id=track_id,
-            embedding=[1.0] + [0.0] * (LOCAL_CLAP_DIMENSIONS - 1),
-            model_name=LOCAL_CLAP_MODEL_NAME,
+            embedding=[1.0] + [0.0] * (LEGACY_EMBEDDING_DIMENSIONS - 1),
+            model_name=LEGACY_EMBEDDING_MODEL_NAME,
             model_version=None,
-            dimensions=LOCAL_CLAP_DIMENSIONS,
+            dimensions=LEGACY_EMBEDDING_DIMENSIONS,
         )
         db.commit()
 
-        daemon_module._initialize_embedding_schema(db, get_embedding_config())
+        _initialize_embedding_schema(db, get_embedding_config())
 
         schema = db.execute("SELECT sql FROM sqlite_master WHERE name = 'track_embeddings'").fetchone()
-        metadata = db.execute("SELECT model_name, dimensions FROM embedding_metadata").fetchone()
         embedding_count = db.execute("SELECT COUNT(*) AS count FROM track_embeddings").fetchone()
 
-        assert f"FLOAT[{LOCAL_CLAP_DIMENSIONS}]" in schema["sql"]
-        assert metadata["model_name"] == LOCAL_CLAP_MODEL_NAME
-        assert metadata["dimensions"] == LOCAL_CLAP_DIMENSIONS
-        assert embedding_count["count"] == 1
+        assert f"FLOAT[{LOCAL_MUQ_DIMENSIONS}]" in schema["sql"]
+        assert embedding_count["count"] == 0
     finally:
         db.close()
 

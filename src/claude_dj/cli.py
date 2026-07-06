@@ -85,7 +85,7 @@ def write_start_details(response: dict[str, object], stdout: TextIO) -> None:
         if isinstance(message, str):
             stdout.write(f"{message}\n")
         if error_code == "spotify_auth_required":
-            stdout.write("Run: uv run claude-dj spotify-login\n")
+            stdout.write("Run: /dj spotify-login\n")
         return
 
     stdout.write("Storing your songs on device.\n")
