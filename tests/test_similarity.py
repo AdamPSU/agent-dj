@@ -105,7 +105,7 @@ def test_generate_next_dj_block_includes_playlist_seed_and_similar_tracks(tmp_pa
         assert block is not None
         assert block.source_id == source_id
         assert len(block.tracks) >= 3
-        assert len(block.tracks) <= 8
+        assert len(block.tracks) <= 6
         assert block.tracks[0] == DJTrack(track_id=block.seed_track_id, role="seed", distance=None)
         assert len({track.track_id for track in block.tracks}) == len(block.tracks)
         assert all(track.role == "similar" for track in block.tracks[1:])
@@ -173,7 +173,7 @@ def test_generate_next_dj_block_keeps_similar_tracks_in_selected_playlist(tmp_pa
         db.close()
 
 
-def test_generate_next_dj_block_can_return_eight_tracks_by_default(tmp_path) -> None:
+def test_generate_next_dj_block_can_return_six_tracks_by_default(tmp_path) -> None:
     db = connect(tmp_path / "claude-dj.sqlite3")
 
     try:
@@ -193,10 +193,10 @@ def test_generate_next_dj_block_can_return_eight_tracks_by_default(tmp_path) -> 
         )
         db.commit()
 
-        block = generate_next_dj_block(db, rng=random.Random(5))
+        block = generate_next_dj_block(db, rng=random.Random(7))
 
         assert block is not None
-        assert len(block.tracks) == 8
+        assert len(block.tracks) == 6
     finally:
         db.close()
 

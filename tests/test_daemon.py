@@ -6,20 +6,25 @@ import threading
 import urllib.error
 import urllib.request
 from datetime import UTC, datetime
+from pathlib import Path
 
 import pytest
 
 from claude_dj.daemon import (
     MIN_READY_TRACKS,
     PLAYBACK_POLL_SECONDS,
+    PendingBridge,
+    _play_and_remove_narration,
+    _prepare_narration_audio,
     _queue_replenishment_if_needed,
     _start_playback_monitor,
     _stop_playback_monitor,
+    _transition_bridge_if_needed,
     create_server,
     write_runtime_file,
 )
 from claude_dj.audio.embeddings import EmbeddingGenerationSummary
-from claude_dj.config import LOCAL_MUQ_DIMENSIONS, LOCAL_MUQ_MODEL_NAME, get_embedding_config
+from claude_dj.config import LOCAL_MUQ_DIMENSIONS, LOCAL_MUQ_MODEL_NAME, NarrationConfig, get_embedding_config
 from claude_dj.audio.previews import PreviewResolutionSummary
 from claude_dj.indexing import (
     IndexSummary,
@@ -425,6 +430,104 @@ def test_session_start_starts_playback_from_ready_recommendation() -> None:
         stop_test_server(server, thread)
 
 
+def test_session_start_skips_intro_narration_and_starts_spotify_immediately(tmp_path) -> None:
+    calls = []
+
+    def fake_recommender(recently_played_track_ids: set[int]) -> DJBlock:
+        return DJBlock(source_id=10, seed_track_id=1, tracks=(DJTrack(track_id=1, role="seed", distance=None),))
+
+    def fake_track_hydrator(track_ids: tuple[int, ...]) -> list[PlayableTrack]:
+        return [PlayableTrack(1, "spotify:track:1", "Track One", "Artist One")]
+
+    def fake_narration_preparer(kind: str, previous_tracks: list[PlayableTrack], next_tracks: list[PlayableTrack] | None) -> Path:
+        calls.append(("prepare", kind, [track.title for track in previous_tracks], next_tracks))
+        return tmp_path / "intro.mp3"
+
+    def fake_narration_player(path: Path) -> None:
+        calls.append(("play-narration", path))
+
+    def fake_playback_starter(spotify_uris: tuple[str, ...]) -> None:
+        calls.append(("start-spotify", spotify_uris))
+
+    server = create_server(
+        catalog_status=CatalogStatus(
+            source_count=1,
+            track_count=MIN_READY_TRACKS,
+            embedding_count=MIN_READY_TRACKS,
+            ready_track_count=MIN_READY_TRACKS,
+        ),
+        recommendation_generator=fake_recommender,
+        track_hydrator=fake_track_hydrator,
+        playback_starter=fake_playback_starter,
+        playback_pauser=lambda: calls.append(("pause",)),
+        narration_preparer=fake_narration_preparer,
+        narration_player=fake_narration_player,
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+
+    try:
+        host, port = server.server_address
+
+        response = json_request(
+            "POST",
+            f"http://{host}:{port}/session/start",
+            {"session_id": "test-session"},
+        )
+
+        assert response["ok"] is True
+        assert calls == [("start-spotify", ("spotify:track:1",))]
+        assert server.state.current_block_tracks == [PlayableTrack(1, "spotify:track:1", "Track One", "Artist One")]
+    finally:
+        stop_test_server(server, thread)
+
+
+def test_session_start_does_not_prepare_intro_narration(tmp_path) -> None:
+    calls = []
+
+    def fake_recommender(recently_played_track_ids: set[int]) -> DJBlock:
+        return DJBlock(source_id=10, seed_track_id=1, tracks=(DJTrack(track_id=1, role="seed", distance=None),))
+
+    def fake_track_hydrator(track_ids: tuple[int, ...]) -> list[PlayableTrack]:
+        return [PlayableTrack(1, "spotify:track:1", "Track One", "Artist One")]
+
+    def fake_playback_starter(spotify_uris: tuple[str, ...]) -> None:
+        calls.append(("start-spotify", spotify_uris))
+
+    def fail_if_intro_is_prepared(kind: str, previous_tracks: list[PlayableTrack], next_tracks: list[PlayableTrack] | None) -> Path:
+        raise AssertionError("startup intro narration should not be prepared")
+
+    server = create_server(
+        catalog_status=CatalogStatus(
+            source_count=1,
+            track_count=MIN_READY_TRACKS,
+            embedding_count=MIN_READY_TRACKS,
+            ready_track_count=MIN_READY_TRACKS,
+        ),
+        recommendation_generator=fake_recommender,
+        track_hydrator=fake_track_hydrator,
+        playback_starter=fake_playback_starter,
+        narration_preparer=fail_if_intro_is_prepared,
+        narration_player=lambda path: calls.append(("play-narration", path)),
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+
+    try:
+        host, port = server.server_address
+
+        response = json_request(
+            "POST",
+            f"http://{host}:{port}/session/start",
+            {"session_id": "test-session"},
+        )
+
+        assert response["ok"] is True
+        assert calls == [("start-spotify", ("spotify:track:1",))]
+    finally:
+        stop_test_server(server, thread)
+
+
 def test_session_start_reports_device_fallback_when_playback_targets_device() -> None:
     def fake_recommender(recently_played_track_ids: set[int]) -> DJBlock:
         return DJBlock(source_id=10, seed_track_id=1, tracks=(DJTrack(track_id=1, role="seed", distance=None),))
@@ -563,6 +666,508 @@ def test_queue_replenishment_queues_next_block_when_two_tracks_remain() -> None:
         server.server_close()
 
 
+def test_queue_replenishment_prepares_bridge_audio_for_next_block(tmp_path) -> None:
+    queue_calls = []
+    bridge_audio = tmp_path / "bridge.mp3"
+
+    def fake_recommender(recently_played_track_ids: set[int]) -> DJBlock:
+        return DJBlock(
+            source_id=20,
+            seed_track_id=5,
+            tracks=(DJTrack(track_id=5, role="seed", distance=None),),
+        )
+
+    def fake_track_hydrator(track_ids: tuple[int, ...]) -> list[PlayableTrack]:
+        return [PlayableTrack(5, "spotify:track:5", "Track Five", "Artist Five")]
+
+    previous_tracks = [
+        PlayableTrack(1, "spotify:track:1", "Track One", "Artist One"),
+        PlayableTrack(2, "spotify:track:2", "Track Two", "Artist Two"),
+    ]
+    prepare_calls = []
+
+    def fake_narration_preparer(kind: str, previous: list[PlayableTrack], next_tracks: list[PlayableTrack] | None) -> Path:
+        prepare_calls.append((kind, previous, next_tracks))
+        return bridge_audio
+
+    server = create_server(
+        catalog_status=CatalogStatus(
+            source_count=1,
+            track_count=MIN_READY_TRACKS,
+            embedding_count=MIN_READY_TRACKS,
+            ready_track_count=MIN_READY_TRACKS,
+        ),
+        recommendation_generator=fake_recommender,
+        track_hydrator=fake_track_hydrator,
+        queue_appender=lambda spotify_uris: queue_calls.append(spotify_uris),
+        narration_preparer=fake_narration_preparer,
+    )
+    server.state.current_block_tracks = previous_tracks
+    server.state.known_spotify_uris = [
+        "spotify:track:1",
+        "spotify:track:2",
+        "spotify:track:3",
+        "spotify:track:4",
+    ]
+
+    try:
+        result = _queue_replenishment_if_needed(
+            server.state,
+            SpotifyPlaybackState(item_uri="spotify:track:2", is_playing=True),
+        )
+
+        assert result is not None
+        assert queue_calls == [("spotify:track:5",)]
+        assert prepare_calls == [("bridge", previous_tracks, [PlayableTrack(5, "spotify:track:5", "Track Five", "Artist Five")])]
+        assert server.state.pending_bridge == PendingBridge(
+            previous_tracks=previous_tracks,
+            next_tracks=[PlayableTrack(5, "spotify:track:5", "Track Five", "Artist Five")],
+            next_uris=("spotify:track:5",),
+            audio_file=bridge_audio,
+        )
+    finally:
+        server.server_close()
+
+
+def test_queue_replenishment_queues_when_bridge_audio_preparation_fails() -> None:
+    queue_calls = []
+
+    def fake_recommender(recently_played_track_ids: set[int]) -> DJBlock:
+        return DJBlock(source_id=20, seed_track_id=5, tracks=(DJTrack(track_id=5, role="seed", distance=None),))
+
+    def fake_track_hydrator(track_ids: tuple[int, ...]) -> list[PlayableTrack]:
+        return [PlayableTrack(5, "spotify:track:5", "Track Five", "Artist Five")]
+
+    def fake_narration_preparer(kind: str, previous: list[PlayableTrack], next_tracks: list[PlayableTrack] | None) -> Path:
+        raise RuntimeError("Claude unavailable")
+
+    server = create_server(
+        catalog_status=CatalogStatus(
+            source_count=1,
+            track_count=MIN_READY_TRACKS,
+            embedding_count=MIN_READY_TRACKS,
+            ready_track_count=MIN_READY_TRACKS,
+        ),
+        recommendation_generator=fake_recommender,
+        track_hydrator=fake_track_hydrator,
+        queue_appender=lambda spotify_uris: queue_calls.append(spotify_uris),
+        narration_preparer=fake_narration_preparer,
+    )
+    server.state.current_block_tracks = [PlayableTrack(1, "spotify:track:1", "Track One", "Artist One")]
+    server.state.known_spotify_uris = [
+        "spotify:track:1",
+        "spotify:track:2",
+        "spotify:track:3",
+        "spotify:track:4",
+    ]
+
+    try:
+        result = _queue_replenishment_if_needed(
+            server.state,
+            SpotifyPlaybackState(item_uri="spotify:track:2", is_playing=True),
+        )
+
+        assert result is not None
+        assert queue_calls == [("spotify:track:5",)]
+        assert server.state.pending_bridge is not None
+        assert server.state.pending_bridge.audio_file is None
+    finally:
+        server.server_close()
+
+
+def test_transition_bridge_pauses_narrates_and_resumes(tmp_path) -> None:
+    audio_file = tmp_path / "bridge.mp3"
+    calls = []
+    next_tracks = [PlayableTrack(5, "spotify:track:5", "Track Five", "Artist Five")]
+    server = create_server(
+        playback_pauser=lambda: calls.append(("pause",)),
+        narration_player=lambda path: calls.append(("play", path)),
+        playback_resumer=lambda: calls.append(("resume",)),
+    )
+    server.state.pending_bridge = PendingBridge(
+        previous_tracks=[PlayableTrack(1, "spotify:track:1", "Track One", "Artist One")],
+        next_tracks=next_tracks,
+        next_uris=("spotify:track:5",),
+        audio_file=audio_file,
+    )
+
+    try:
+        transitioned = _transition_bridge_if_needed(
+            server.state,
+            SpotifyPlaybackState(item_uri="spotify:track:5", is_playing=True),
+            sleep=lambda seconds: calls.append(("sleep", seconds)),
+        )
+
+        assert transitioned is True
+        assert calls == [
+            ("pause",),
+            ("sleep", 1.0),
+            ("play", audio_file),
+            ("sleep", 1.0),
+            ("resume",),
+        ]
+        assert server.state.current_block_tracks == next_tracks
+        assert server.state.pending_bridge is None
+    finally:
+        server.server_close()
+
+
+def test_transition_bridge_waits_for_final_track_to_end_before_narrating(tmp_path) -> None:
+    audio_file = tmp_path / "bridge.mp3"
+    calls = []
+    next_tracks = [PlayableTrack(5, "spotify:track:5", "Track Five", "Artist Five")]
+    server = create_server(
+        playback_pauser=lambda: calls.append(("pause",)),
+        narration_player=lambda path: calls.append(("play", path)),
+        playback_resumer=lambda: calls.append(("resume",)),
+    )
+    server.state.known_spotify_uris = ["spotify:track:1", "spotify:track:5"]
+    server.state.pending_bridge = PendingBridge(
+        previous_tracks=[PlayableTrack(1, "spotify:track:1", "Track One", "Artist One")],
+        next_tracks=next_tracks,
+        next_uris=("spotify:track:5",),
+        audio_file=audio_file,
+    )
+
+    try:
+        transitioned = _transition_bridge_if_needed(
+            server.state,
+            SpotifyPlaybackState(
+                item_uri="spotify:track:1",
+                is_playing=True,
+                progress_ms=97_000,
+                duration_ms=100_000,
+            ),
+            sleep=lambda seconds: calls.append(("sleep", seconds)),
+        )
+
+        assert transitioned is True
+        assert calls == [
+            ("sleep", 3.0),
+            ("pause",),
+            ("sleep", 1.0),
+            ("play", audio_file),
+            ("sleep", 1.0),
+            ("resume",),
+        ]
+        assert server.state.current_block_tracks == next_tracks
+        assert server.state.pending_bridge is None
+    finally:
+        server.server_close()
+
+
+def test_transition_bridge_skips_late_bridge_narration(tmp_path) -> None:
+    audio_file = tmp_path / "bridge.mp3"
+    audio_file.write_bytes(b"prepared audio")
+    calls = []
+    next_tracks = [PlayableTrack(5, "spotify:track:5", "Track Five", "Artist Five")]
+    server = create_server(
+        playback_pauser=lambda: calls.append(("pause",)),
+        narration_player=lambda path: calls.append(("play", path)),
+        playback_resumer=lambda: calls.append(("resume",)),
+    )
+    server.state.pending_bridge = PendingBridge(
+        previous_tracks=[PlayableTrack(1, "spotify:track:1", "Track One", "Artist One")],
+        next_tracks=next_tracks,
+        next_uris=("spotify:track:5",),
+        audio_file=audio_file,
+    )
+
+    try:
+        transitioned = _transition_bridge_if_needed(
+            server.state,
+            SpotifyPlaybackState(
+                item_uri="spotify:track:5",
+                is_playing=True,
+                progress_ms=5_001,
+                duration_ms=100_000,
+            ),
+            sleep=lambda seconds: calls.append(("sleep", seconds)),
+        )
+
+        assert transitioned is True
+        assert calls == []
+        assert server.state.current_block_tracks == next_tracks
+        assert server.state.pending_bridge is None
+        assert not audio_file.exists()
+    finally:
+        server.server_close()
+
+
+def test_transition_bridge_skips_when_first_next_track_was_missed(tmp_path) -> None:
+    audio_file = tmp_path / "bridge.mp3"
+    audio_file.write_bytes(b"prepared audio")
+    calls = []
+    next_tracks = [
+        PlayableTrack(5, "spotify:track:5", "Track Five", "Artist Five"),
+        PlayableTrack(6, "spotify:track:6", "Track Six", "Artist Six"),
+    ]
+    server = create_server(
+        playback_pauser=lambda: calls.append(("pause",)),
+        narration_player=lambda path: calls.append(("play", path)),
+        playback_resumer=lambda: calls.append(("resume",)),
+    )
+    server.state.pending_bridge = PendingBridge(
+        previous_tracks=[PlayableTrack(1, "spotify:track:1", "Track One", "Artist One")],
+        next_tracks=next_tracks,
+        next_uris=("spotify:track:5", "spotify:track:6"),
+        audio_file=audio_file,
+    )
+
+    try:
+        transitioned = _transition_bridge_if_needed(
+            server.state,
+            SpotifyPlaybackState(item_uri="spotify:track:6", is_playing=True, progress_ms=500, duration_ms=100_000),
+            sleep=lambda seconds: calls.append(("sleep", seconds)),
+        )
+
+        assert transitioned is True
+        assert calls == []
+        assert server.state.current_block_tracks == next_tracks
+        assert server.state.pending_bridge is None
+        assert not audio_file.exists()
+    finally:
+        server.server_close()
+
+
+def test_transition_bridge_skips_silent_gap_when_no_audio_was_prepared() -> None:
+    calls = []
+    next_tracks = [PlayableTrack(5, "spotify:track:5", "Track Five", "Artist Five")]
+    server = create_server(
+        playback_pauser=lambda: calls.append(("pause",)),
+        narration_player=lambda path: calls.append(("play", path)),
+        playback_resumer=lambda: calls.append(("resume",)),
+    )
+    server.state.pending_bridge = PendingBridge(
+        previous_tracks=[PlayableTrack(1, "spotify:track:1", "Track One", "Artist One")],
+        next_tracks=next_tracks,
+        next_uris=("spotify:track:5",),
+        audio_file=None,
+    )
+
+    try:
+        transitioned = _transition_bridge_if_needed(
+            server.state,
+            SpotifyPlaybackState(item_uri="spotify:track:5", is_playing=True, progress_ms=500, duration_ms=100_000),
+            sleep=lambda seconds: calls.append(("sleep", seconds)),
+        )
+
+        assert transitioned is True
+        assert calls == []
+        assert server.state.current_block_tracks == next_tracks
+        assert server.state.pending_bridge is None
+    finally:
+        server.server_close()
+
+
+def test_transition_bridge_prepares_following_block_immediately(tmp_path) -> None:
+    queue_calls = []
+    prepare_calls = []
+    lookahead_queued = threading.Event()
+    next_tracks = [PlayableTrack(5, "spotify:track:5", "Track Five", "Artist Five")]
+    following_tracks = [PlayableTrack(8, "spotify:track:8", "Track Eight", "Artist Eight")]
+    bridge_audio = tmp_path / "following-bridge.mp3"
+
+    def fake_recommender(recently_played_track_ids: set[int]) -> DJBlock:
+        return DJBlock(source_id=30, seed_track_id=8, tracks=(DJTrack(track_id=8, role="seed", distance=None),))
+
+    def fake_track_hydrator(track_ids: tuple[int, ...]) -> list[PlayableTrack]:
+        assert track_ids == (8,)
+        return following_tracks
+
+    def fake_queue_appender(spotify_uris: tuple[str, ...]) -> None:
+        queue_calls.append(spotify_uris)
+        lookahead_queued.set()
+
+    def fake_narration_preparer(
+        kind: str,
+        previous_tracks: list[PlayableTrack],
+        next_tracks_for_bridge: list[PlayableTrack] | None,
+    ) -> Path:
+        prepare_calls.append((kind, previous_tracks, next_tracks_for_bridge))
+        return bridge_audio
+
+    server = create_server(
+        catalog_status=CatalogStatus(
+            source_count=1,
+            track_count=MIN_READY_TRACKS,
+            embedding_count=MIN_READY_TRACKS,
+            ready_track_count=MIN_READY_TRACKS,
+        ),
+        recommendation_generator=fake_recommender,
+        track_hydrator=fake_track_hydrator,
+        queue_appender=fake_queue_appender,
+        narration_preparer=fake_narration_preparer,
+    )
+    server.state.pending_bridge = PendingBridge(
+        previous_tracks=[PlayableTrack(1, "spotify:track:1", "Track One", "Artist One")],
+        next_tracks=next_tracks,
+        next_uris=("spotify:track:5",),
+        audio_file=None,
+    )
+    server.state.known_spotify_uris = ["spotify:track:1", "spotify:track:5"]
+
+    try:
+        transitioned = _transition_bridge_if_needed(
+            server.state,
+            SpotifyPlaybackState(item_uri="spotify:track:5", is_playing=True),
+        )
+
+        assert transitioned is True
+        assert lookahead_queued.wait(timeout=2)
+        assert queue_calls == [("spotify:track:8",)]
+        assert prepare_calls == [("bridge", next_tracks, following_tracks)]
+        assert server.state.current_block_tracks == next_tracks
+        assert server.state.pending_bridge == PendingBridge(
+            previous_tracks=next_tracks,
+            next_tracks=following_tracks,
+            next_uris=("spotify:track:8",),
+            audio_file=bridge_audio,
+        )
+    finally:
+        server.server_close()
+
+
+def test_transition_bridge_resumes_when_narration_playback_fails(tmp_path) -> None:
+    audio_file = tmp_path / "bridge.mp3"
+    audio_file.write_bytes(b"prepared audio")
+    calls = []
+    server = create_server(
+        playback_pauser=lambda: calls.append(("pause",)),
+        playback_resumer=lambda: calls.append(("resume",)),
+    )
+    server.state.narration_player = lambda path: (_ for _ in ()).throw(RuntimeError("speaker unavailable"))
+    server.state.pending_bridge = PendingBridge(
+        previous_tracks=[PlayableTrack(1, "spotify:track:1", "Track One", "Artist One")],
+        next_tracks=[PlayableTrack(5, "spotify:track:5", "Track Five", "Artist Five")],
+        next_uris=("spotify:track:5",),
+        audio_file=audio_file,
+    )
+
+    try:
+        transitioned = _transition_bridge_if_needed(
+            server.state,
+            SpotifyPlaybackState(item_uri="spotify:track:5", is_playing=True),
+            sleep=lambda seconds: calls.append(("sleep", seconds)),
+        )
+
+        assert transitioned is True
+        assert calls == [("pause",), ("sleep", 1.0), ("resume",)]
+        assert server.state.pending_bridge is None
+        assert not audio_file.exists()
+    finally:
+        server.server_close()
+
+
+def test_transition_bridge_clears_pending_when_resume_fails(tmp_path) -> None:
+    audio_file = tmp_path / "bridge.mp3"
+    audio_file.write_bytes(b"prepared audio")
+    calls = []
+    next_tracks = [PlayableTrack(5, "spotify:track:5", "Track Five", "Artist Five")]
+
+    def fake_resumer() -> None:
+        calls.append(("resume",))
+        raise RuntimeError("Spotify resume failed")
+
+    server = create_server(
+        playback_pauser=lambda: calls.append(("pause",)),
+        narration_player=lambda path: calls.append(("play", path)),
+        playback_resumer=fake_resumer,
+    )
+    server.state.pending_bridge = PendingBridge(
+        previous_tracks=[PlayableTrack(1, "spotify:track:1", "Track One", "Artist One")],
+        next_tracks=next_tracks,
+        next_uris=("spotify:track:5",),
+        audio_file=audio_file,
+    )
+
+    try:
+        transitioned = _transition_bridge_if_needed(
+            server.state,
+            SpotifyPlaybackState(item_uri="spotify:track:5", is_playing=True),
+            sleep=lambda seconds: calls.append(("sleep", seconds)),
+        )
+
+        assert transitioned is True
+        assert calls == [("pause",), ("sleep", 1.0), ("play", audio_file), ("sleep", 1.0), ("resume",)]
+        assert server.state.current_block_tracks == next_tracks
+        assert server.state.pending_bridge is None
+        assert not audio_file.exists()
+    finally:
+        server.server_close()
+
+
+def test_prepare_narration_audio_generates_script_and_synthesizes_file(tmp_path) -> None:
+    script_calls = []
+    synth_calls = []
+    config = NarrationConfig(
+        elevenlabs_api_key="key",
+        elevenlabs_voice_id="voice",
+        elevenlabs_model_id="eleven_v3",
+        elevenlabs_output_format="mp3_44100_128",
+    )
+
+    def fake_script_generator(prompt: str) -> str | None:
+        script_calls.append(prompt)
+        return "Claude DJ is in the building."
+
+    def fake_synthesizer(script: str, output_file: Path, narration_config: NarrationConfig) -> Path:
+        synth_calls.append((script, output_file, narration_config))
+        output_file.write_bytes(b"audio")
+        return output_file
+
+    result = _prepare_narration_audio(
+        "intro",
+        [PlayableTrack(1, "spotify:track:1", "Track One", "Artist One")],
+        None,
+        narration_dir=tmp_path,
+        narration_config=config,
+        script_generator=fake_script_generator,
+        speech_synthesizer=fake_synthesizer,
+    )
+
+    assert result is not None
+    assert result.parent == tmp_path
+    assert result.suffix == ".mp3"
+    assert result.read_bytes() == b"audio"
+    assert "Track One by Artist One" in script_calls[0]
+    assert synth_calls == [("Claude DJ is in the building.", result, config)]
+
+
+def test_prepare_narration_audio_returns_none_when_script_generation_fails(tmp_path) -> None:
+    config = NarrationConfig(
+        elevenlabs_api_key="key",
+        elevenlabs_voice_id="voice",
+        elevenlabs_model_id="eleven_v3",
+        elevenlabs_output_format="mp3_44100_128",
+    )
+    synth_calls = []
+
+    result = _prepare_narration_audio(
+        "intro",
+        [PlayableTrack(1, "spotify:track:1", "Track One", "Artist One")],
+        None,
+        narration_dir=tmp_path,
+        narration_config=config,
+        script_generator=lambda prompt: None,
+        speech_synthesizer=lambda script, output_file, narration_config: synth_calls.append(True),
+    )
+
+    assert result is None
+    assert synth_calls == []
+
+
+def test_play_and_remove_narration_deletes_file_after_playback(tmp_path) -> None:
+    audio_file = tmp_path / "speech.mp3"
+    audio_file.write_bytes(b"audio")
+    calls = []
+
+    _play_and_remove_narration(audio_file, player=lambda path: calls.append(path))
+
+    assert calls == [audio_file]
+    assert not audio_file.exists()
+
+
 def test_queue_replenishment_does_not_queue_when_more_than_two_tracks_remain() -> None:
     queue_calls = []
 
@@ -642,6 +1247,234 @@ def test_session_start_starts_playback_monitor_after_successful_playback() -> No
         assert server.state.playback_monitor_thread.is_alive()
     finally:
         _stop_playback_monitor(server.state)
+        stop_test_server(server, thread)
+
+
+def test_session_start_starts_first_track_and_queues_remainder() -> None:
+    playback_calls = []
+    queue_calls = []
+    calls = []
+    recommendation_calls = []
+
+    def fake_recommender(recently_played_track_ids: set[int]) -> DJBlock | None:
+        recommendation_calls.append(set(recently_played_track_ids))
+        if len(recommendation_calls) > 1:
+            return None
+        return DJBlock(
+            source_id=10,
+            seed_track_id=1,
+            tracks=(
+                DJTrack(track_id=1, role="seed", distance=None),
+                DJTrack(track_id=2, role="similar", distance=0.1),
+                DJTrack(track_id=3, role="similar", distance=0.2),
+            ),
+        )
+
+    def fake_track_hydrator(track_ids: tuple[int, ...]) -> list[PlayableTrack]:
+        assert track_ids == (1, 2, 3)
+        return [
+            PlayableTrack(1, "spotify:track:1", "Track One", "Artist One"),
+            PlayableTrack(2, "spotify:track:2", "Track Two", "Artist Two"),
+            PlayableTrack(3, "spotify:track:3", "Track Three", "Artist Three"),
+        ]
+
+    def fake_playback_starter(spotify_uris: tuple[str, ...]) -> None:
+        playback_calls.append(spotify_uris)
+        calls.append(("start", spotify_uris))
+
+    def fake_queue_appender(spotify_uris: tuple[str, ...]) -> None:
+        queue_calls.append(spotify_uris)
+        calls.append(("queue", spotify_uris))
+
+    server = create_server(
+        catalog_status=CatalogStatus(
+            source_count=1,
+            track_count=MIN_READY_TRACKS,
+            embedding_count=MIN_READY_TRACKS,
+            ready_track_count=MIN_READY_TRACKS,
+        ),
+        recommendation_generator=fake_recommender,
+        track_hydrator=fake_track_hydrator,
+        playback_starter=fake_playback_starter,
+        playback_options_setter=lambda: calls.append(("normalize-options",)),
+        queue_appender=fake_queue_appender,
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+
+    try:
+        host, port = server.server_address
+
+        response = json_request(
+            "POST",
+            f"http://{host}:{port}/session/start",
+            {"session_id": "test-session"},
+        )
+
+        assert response["ok"] is True
+        assert playback_calls == [("spotify:track:1",)]
+        assert queue_calls == [("spotify:track:2", "spotify:track:3")]
+        assert calls == [
+            ("start", ("spotify:track:1",)),
+            ("normalize-options",),
+            ("queue", ("spotify:track:2", "spotify:track:3")),
+        ]
+        assert server.state.known_spotify_uris == ["spotify:track:1", "spotify:track:2", "spotify:track:3"]
+    finally:
+        _stop_playback_monitor(server.state)
+        stop_test_server(server, thread)
+
+
+def test_session_start_prepares_next_block_immediately(tmp_path) -> None:
+    queue_calls = []
+    prepare_calls = []
+    recommendation_calls = []
+    lookahead_queued = threading.Event()
+    bridge_audio = tmp_path / "bridge.mp3"
+
+    def fake_recommender(recently_played_track_ids: set[int]) -> DJBlock:
+        recommendation_calls.append(set(recently_played_track_ids))
+        if len(recommendation_calls) == 1:
+            return DJBlock(
+                source_id=10,
+                seed_track_id=1,
+                tracks=(
+                    DJTrack(track_id=1, role="seed", distance=None),
+                    DJTrack(track_id=2, role="similar", distance=0.1),
+                ),
+            )
+        return DJBlock(
+            source_id=20,
+            seed_track_id=5,
+            tracks=(
+                DJTrack(track_id=5, role="seed", distance=None),
+                DJTrack(track_id=6, role="similar", distance=0.1),
+            ),
+        )
+
+    def fake_track_hydrator(track_ids: tuple[int, ...]) -> list[PlayableTrack]:
+        tracks = {
+            1: PlayableTrack(1, "spotify:track:1", "Track One", "Artist One"),
+            2: PlayableTrack(2, "spotify:track:2", "Track Two", "Artist Two"),
+            5: PlayableTrack(5, "spotify:track:5", "Track Five", "Artist Five"),
+            6: PlayableTrack(6, "spotify:track:6", "Track Six", "Artist Six"),
+        }
+        return [tracks[track_id] for track_id in track_ids]
+
+    def fake_queue_appender(spotify_uris: tuple[str, ...]) -> None:
+        queue_calls.append(spotify_uris)
+        if spotify_uris == ("spotify:track:5", "spotify:track:6"):
+            lookahead_queued.set()
+
+    def fake_narration_preparer(
+        kind: str,
+        previous_tracks: list[PlayableTrack],
+        next_tracks: list[PlayableTrack] | None,
+    ) -> Path:
+        prepare_calls.append((kind, previous_tracks, next_tracks))
+        return bridge_audio
+
+    server = create_server(
+        catalog_status=CatalogStatus(
+            source_count=1,
+            track_count=MIN_READY_TRACKS,
+            embedding_count=MIN_READY_TRACKS,
+            ready_track_count=MIN_READY_TRACKS,
+        ),
+        recommendation_generator=fake_recommender,
+        track_hydrator=fake_track_hydrator,
+        playback_starter=lambda spotify_uris: None,
+        queue_appender=fake_queue_appender,
+        narration_preparer=fake_narration_preparer,
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+
+    try:
+        host, port = server.server_address
+
+        response = json_request(
+            "POST",
+            f"http://{host}:{port}/session/start",
+            {"session_id": "test-session"},
+        )
+
+        assert response["ok"] is True
+        assert lookahead_queued.wait(timeout=2)
+        assert queue_calls == [("spotify:track:2",), ("spotify:track:5", "spotify:track:6")]
+        assert recommendation_calls == [set(), {1, 2}]
+        assert prepare_calls == [
+            (
+                "bridge",
+                [
+                    PlayableTrack(1, "spotify:track:1", "Track One", "Artist One"),
+                    PlayableTrack(2, "spotify:track:2", "Track Two", "Artist Two"),
+                ],
+                [
+                    PlayableTrack(5, "spotify:track:5", "Track Five", "Artist Five"),
+                    PlayableTrack(6, "spotify:track:6", "Track Six", "Artist Six"),
+                ],
+            )
+        ]
+        assert server.state.pending_bridge == PendingBridge(
+            previous_tracks=[
+                PlayableTrack(1, "spotify:track:1", "Track One", "Artist One"),
+                PlayableTrack(2, "spotify:track:2", "Track Two", "Artist Two"),
+            ],
+            next_tracks=[
+                PlayableTrack(5, "spotify:track:5", "Track Five", "Artist Five"),
+                PlayableTrack(6, "spotify:track:6", "Track Six", "Artist Six"),
+            ],
+            next_uris=("spotify:track:5", "spotify:track:6"),
+            audio_file=bridge_audio,
+        )
+    finally:
+        stop_test_server(server, thread)
+
+
+def test_session_start_attaches_to_running_playback_without_restarting() -> None:
+    playback_calls = []
+    queue_calls = []
+    recommendation_calls = []
+
+    def fake_recommender(recently_played_track_ids: set[int]) -> DJBlock:
+        recommendation_calls.append(recently_played_track_ids)
+        return DJBlock(source_id=10, seed_track_id=3, tracks=(DJTrack(track_id=3, role="seed", distance=None),))
+
+    server = create_server(
+        catalog_status=CatalogStatus(
+            source_count=1,
+            track_count=MIN_READY_TRACKS,
+            embedding_count=MIN_READY_TRACKS,
+            ready_track_count=MIN_READY_TRACKS,
+        ),
+        recommendation_generator=fake_recommender,
+        track_hydrator=lambda track_ids: [PlayableTrack(3, "spotify:track:3", "Track Three", "Artist Three")],
+        playback_starter=lambda spotify_uris: playback_calls.append(spotify_uris),
+        queue_appender=lambda spotify_uris: queue_calls.append(spotify_uris),
+    )
+    server.state.active_session_id = "local-cli"
+    server.state.known_spotify_uris = ["spotify:track:1", "spotify:track:2"]
+    server.state.playback_monitor_status = "running"
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+
+    try:
+        host, port = server.server_address
+
+        response = json_request(
+            "POST",
+            f"http://{host}:{port}/session/start",
+            {"session_id": "local-cli"},
+        )
+
+        assert response["ok"] is True
+        assert response["playback"] == {"attached": True, "message": "Claude DJ is already playing."}
+        assert recommendation_calls == []
+        assert playback_calls == []
+        assert queue_calls == []
+        assert server.state.known_spotify_uris == ["spotify:track:1", "spotify:track:2"]
+    finally:
         stop_test_server(server, thread)
 
 

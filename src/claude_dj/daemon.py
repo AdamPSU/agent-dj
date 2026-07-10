@@ -1,24 +1,31 @@
 """Long-running local process for Claude DJ.
 
-This module will own session lifecycle, command handling, and the DJ loop.
+This module owns session lifecycle, command handling, and the DJ loop.
 """
 
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from collections.abc import Callable
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 import json
 import os
 import threading
+import time
+import uuid
 
 from claude_dj.config import (
     ensure_app_dir,
+    ensure_narration_dir,
     get_database_file,
     get_embedding_config,
+    get_narration_config,
     get_runtime_file,
     get_spotify_device_file,
     get_spotify_token_file,
+    NarrationConfig,
 )
+from claude_dj.adapters.elevenlabs import synthesize_speech_to_file
 from claude_dj.adapters.spotify import (
     SpotifyAuthError,
     SpotifyDevice,
@@ -28,9 +35,14 @@ from claude_dj.adapters.spotify import (
     SpotifyPlaybackState,
     add_to_queue_with_token,
     fetch_playback_state_with_token,
+    pause_playback_with_token,
+    resume_playback_with_token,
+    set_repeat_mode_with_token,
+    set_shuffle_with_token,
 )
 from claude_dj.devices import PlaybackDeviceResult, start_playback_with_device_policy
 from claude_dj.audio.embeddings import EmbeddingGenerationSummary, generate_audio_embeddings
+from claude_dj.audio.local_playback import play_audio_file
 from claude_dj.audio.previews import (
     PreviewResolutionSummary,
     resolve_deezer_previews,
@@ -42,6 +54,7 @@ from claude_dj.indexing import (
     index_spotify_playlists,
 )
 from claude_dj.models import RuntimeInfo
+from claude_dj.narration.scripts import build_bridge_prompt, build_intro_prompt, generate_script_with_claude
 from claude_dj.recommendation.similarity import DJBlock, generate_next_dj_block
 from claude_dj.storage.db import (
     CatalogStatus,
@@ -68,51 +81,76 @@ TrackHydrator = Callable[[tuple[int, ...]], list[PlayableTrack]]
 PlaybackStarter = Callable[[tuple[str, ...]], PlaybackDeviceResult | None]
 QueueAppender = Callable[[tuple[str, ...]], None]
 PlaybackStateFetcher = Callable[[], SpotifyPlaybackState]
+PlaybackOptionsSetter = Callable[[], None]
+NarrationPreparer = Callable[[str, list[PlayableTrack], list[PlayableTrack] | None], Path | None]
+NarrationPlayer = Callable[[Path], None]
+PlaybackPauser = Callable[[], None]
+PlaybackResumer = Callable[[], None]
+ScriptGenerator = Callable[[str], str | None]
+SpeechSynthesizer = Callable[[str, Path, NarrationConfig], Path]
 PLAYBACK_POLL_SECONDS = 5.0
 QUEUE_REPLENISH_THRESHOLD_TRACKS = 2
+TRANSITION_SILENCE_SECONDS = 1.0
+TRANSITION_AUDIO_WINDOW_SECONDS = 5.0
 
 
+@dataclass
+class PendingBridge:
+    """Prepared narration for the handoff into the next Spotify block."""
+
+    previous_tracks: list[PlayableTrack]
+    next_tracks: list[PlayableTrack]
+    next_uris: tuple[str, ...]
+    audio_file: Path | None
+
+
+@dataclass(frozen=True)
+class BridgeTransitionPlan:
+    """Timing plan for a prepared bridge narration."""
+
+    delay_seconds: float
+    pause_before_delay: bool
+    play_narration: bool = True
+
+
+@dataclass
 class DaemonState:
     """In-memory daemon state for the local control server."""
 
-    def __init__(
-        self,
-        host: str,
-        port: int,
-        catalog_status: CatalogStatus,
-        spotify_indexer: SpotifyIndexer | None,
-        preview_resolver: PreviewResolver | None,
-        embedding_generator: EmbeddingGenerator | None,
-        recommendation_generator: RecommendationGenerator | None,
-        track_hydrator: TrackHydrator | None,
-        playback_starter: PlaybackStarter | None,
-        playback_state_fetcher: PlaybackStateFetcher | None,
-        queue_appender: QueueAppender | None,
-    ) -> None:
-        self.host = host
-        self.port = port
-        self.pid = os.getpid()
-        self.active_session_id: str | None = None
-        self.catalog_status = catalog_status
-        self.spotify_indexer = spotify_indexer
-        self.preview_resolver = preview_resolver
-        self.embedding_generator = embedding_generator
-        self.recommendation_generator = recommendation_generator
-        self.track_hydrator = track_hydrator
-        self.playback_starter = playback_starter
-        self.playback_state_fetcher = playback_state_fetcher
-        self.queue_appender = queue_appender
-        self.known_spotify_uris: list[str] = []
-        self.playback_monitor_status = "idle"
-        self.playback_monitor_error: str | None = None
-        self.playback_monitor_thread: threading.Thread | None = None
-        self.playback_monitor_stop = threading.Event()
-        self.track_last_played_at: dict[int, datetime] = {}
-        self.sync_status = "idle"
-        self.sync_error: str | None = None
-        self.sync_indexing: dict[str, dict[str, object]] = _empty_indexing_payload()
-        self.sync_thread: threading.Thread | None = None
-        self.sync_condition = threading.Condition(threading.RLock())
+    host: str
+    port: int
+    catalog_status: CatalogStatus
+    spotify_indexer: SpotifyIndexer | None = None
+    preview_resolver: PreviewResolver | None = None
+    embedding_generator: EmbeddingGenerator | None = None
+    recommendation_generator: RecommendationGenerator | None = None
+    track_hydrator: TrackHydrator | None = None
+    playback_starter: PlaybackStarter | None = None
+    playback_state_fetcher: PlaybackStateFetcher | None = None
+    playback_options_setter: PlaybackOptionsSetter | None = None
+    queue_appender: QueueAppender | None = None
+    narration_preparer: NarrationPreparer | None = None
+    narration_player: NarrationPlayer | None = None
+    playback_pauser: PlaybackPauser | None = None
+    playback_resumer: PlaybackResumer | None = None
+    pid: int = field(default_factory=os.getpid)
+    active_session_id: str | None = None
+    known_spotify_uris: list[str] = field(default_factory=list)
+    current_block_tracks: list[PlayableTrack] = field(default_factory=list)
+    pending_bridge: PendingBridge | None = None
+    lookahead_thread: threading.Thread | None = None
+    lookahead_generation: int = 0
+    lookahead_error: str | None = None
+    playback_monitor_status: str = "idle"
+    playback_monitor_error: str | None = None
+    playback_monitor_thread: threading.Thread | None = None
+    playback_monitor_stop: threading.Event = field(default_factory=threading.Event)
+    track_last_played_at: dict[int, datetime] = field(default_factory=dict)
+    sync_status: str = "idle"
+    sync_error: str | None = None
+    sync_indexing: dict[str, dict[str, object]] = field(default_factory=lambda: _empty_indexing_payload())
+    sync_thread: threading.Thread | None = None
+    sync_condition: threading.Condition = field(default_factory=lambda: threading.Condition(threading.RLock()))
 
 
 class ClaudeDJHTTPServer(ThreadingHTTPServer):
@@ -183,6 +221,29 @@ class DaemonRequestHandler(BaseHTTPRequestHandler):
     def _handle_session_start(self, body: dict[str, object]) -> None:
         session_id = str(body.get("session_id") or "local-cli")
         self.server.state.active_session_id = session_id
+        attached_playback = _running_playback_payload(self.server.state)
+        if attached_playback is not None:
+            self._send_json(
+                200,
+                {
+                    "ok": True,
+                    "message": "Claude DJ session attached.",
+                    "active_session_id": self.server.state.active_session_id,
+                    "error_code": None,
+                    "minimum_ready_tracks": MIN_READY_TRACKS,
+                    "catalog": self.server.state.catalog_status.to_json(),
+                    "indexing": self.server.state.sync_indexing,
+                    "onboarding": {
+                        "index_all_playlists": self.server.state.catalog_status.needs_spotify_index,
+                        "resolve_previews": self.server.state.catalog_status.needs_preview_resolution,
+                        "embed_tracks": self.server.state.catalog_status.needs_embeddings,
+                    },
+                    "sync": self._sync_status_json(),
+                    "recommendation": None,
+                    "playback": attached_playback,
+                },
+            )
+            return
         self._start_sync_if_idle()
         self._wait_for_ready_tracks_or_sync_terminal()
         ready = self.server.state.catalog_status.ready_track_count >= MIN_READY_TRACKS
@@ -191,6 +252,7 @@ class DaemonRequestHandler(BaseHTTPRequestHandler):
         playback = self._start_recommendation_playback(recommendation) if recommendation is not None else None
         if _playback_started(playback):
             _start_playback_monitor(self.server.state)
+            _start_lookahead_preparation(self.server.state)
         self._send_json(
             200,
             {
@@ -431,8 +493,18 @@ class DaemonRequestHandler(BaseHTTPRequestHandler):
             )
 
         spotify_uris = tuple(track.spotify_uri for track in playable_tracks)
+        playback_uris = spotify_uris
+        queued_uris: tuple[str, ...] = ()
+        queue_appender = self.server.state.queue_appender
+        if queue_appender is not None and len(spotify_uris) > 1:
+            playback_uris = spotify_uris[:1]
+            queued_uris = spotify_uris[1:]
         try:
-            device_result = playback_starter(spotify_uris)
+            device_result = playback_starter(playback_uris)
+            if self.server.state.playback_options_setter is not None:
+                self.server.state.playback_options_setter()
+            if queued_uris:
+                queue_appender(queued_uris)
         except SpotifyAuthError as exc:
             return _playback_error_payload("spotify_auth_required", str(exc))
         except SpotifyNoActiveDeviceError as exc:
@@ -444,6 +516,7 @@ class DaemonRequestHandler(BaseHTTPRequestHandler):
 
         with self.server.state.sync_condition:
             self.server.state.known_spotify_uris = list(spotify_uris)
+            self.server.state.current_block_tracks = list(playable_tracks)
         return _playback_success_payload(playable_tracks, device_result)
 
     def _read_json_body(self) -> dict[str, object] | None:
@@ -476,7 +549,12 @@ def create_server(
     track_hydrator: TrackHydrator | None = None,
     playback_starter: PlaybackStarter | None = None,
     playback_state_fetcher: PlaybackStateFetcher | None = None,
+    playback_options_setter: PlaybackOptionsSetter | None = None,
     queue_appender: QueueAppender | None = None,
+    narration_preparer: NarrationPreparer | None = None,
+    narration_player: NarrationPlayer | None = None,
+    playback_pauser: PlaybackPauser | None = None,
+    playback_resumer: PlaybackResumer | None = None,
 ) -> ClaudeDJHTTPServer:
     """Create a loopback-only local HTTP daemon server."""
     server = ClaudeDJHTTPServer((host, port), DaemonRequestHandler)
@@ -492,9 +570,35 @@ def create_server(
         track_hydrator=track_hydrator,
         playback_starter=playback_starter,
         playback_state_fetcher=playback_state_fetcher,
+        playback_options_setter=playback_options_setter,
         queue_appender=queue_appender,
+        narration_preparer=narration_preparer,
+        narration_player=narration_player,
+        playback_pauser=playback_pauser,
+        playback_resumer=playback_resumer,
     )
     return server
+
+
+def _play_intro_narration(state: DaemonState, tracks: list[PlayableTrack]) -> None:
+    if state.narration_preparer is None or state.narration_player is None:
+        return
+    _best_effort_pause(state)
+    try:
+        audio_file = state.narration_preparer("intro", tracks, None)
+        if audio_file is not None:
+            state.narration_player(audio_file)
+    except Exception:
+        return
+
+
+def _best_effort_pause(state: DaemonState) -> None:
+    if state.playback_pauser is None:
+        return
+    try:
+        state.playback_pauser()
+    except Exception:
+        return
 
 
 def _start_playback_monitor(state: DaemonState, poll_seconds: float = PLAYBACK_POLL_SECONDS) -> None:
@@ -529,7 +633,9 @@ def _run_playback_monitor(state: DaemonState, poll_seconds: float) -> None:
         try:
             fetcher = state.playback_state_fetcher
             if fetcher is not None:
-                _queue_replenishment_if_needed(state, fetcher())
+                playback_state = fetcher()
+                if not _transition_bridge_if_needed(state, playback_state):
+                    _queue_replenishment_if_needed(state, playback_state)
         except Exception as exc:
             state.playback_monitor_error = str(exc)
             state.playback_monitor_status = "failed"
@@ -547,6 +653,8 @@ def _queue_replenishment_if_needed(
         return None
 
     with state.sync_condition:
+        if state.pending_bridge is not None:
+            return None
         try:
             current_index = state.known_spotify_uris.index(playback_state.item_uri)
         except ValueError:
@@ -554,6 +662,57 @@ def _queue_replenishment_if_needed(
         remaining_after_current = len(state.known_spotify_uris) - current_index - 1
         if remaining_after_current > QUEUE_REPLENISH_THRESHOLD_TRACKS:
             return None
+        lookahead_thread = state.lookahead_thread
+        if lookahead_thread is not None and lookahead_thread.is_alive():
+            return None
+
+    return _prepare_and_queue_next_block(state)
+
+
+def _start_lookahead_preparation(state: DaemonState) -> None:
+    if state.recommendation_generator is None or state.track_hydrator is None or state.queue_appender is None:
+        return
+    with state.sync_condition:
+        if state.pending_bridge is not None:
+            return
+        existing_thread = state.lookahead_thread
+        if existing_thread is not None and existing_thread.is_alive():
+            return
+        state.lookahead_generation += 1
+        generation = state.lookahead_generation
+        state.lookahead_error = None
+        thread = threading.Thread(
+            target=_run_lookahead_preparation,
+            args=(state, generation),
+            daemon=True,
+        )
+        state.lookahead_thread = thread
+    thread.start()
+
+
+def _run_lookahead_preparation(state: DaemonState, generation: int) -> None:
+    try:
+        _prepare_and_queue_next_block(state, generation=generation)
+    except Exception as exc:
+        with state.sync_condition:
+            if state.lookahead_generation == generation:
+                state.lookahead_error = str(exc)
+
+
+def _prepare_and_queue_next_block(
+    state: DaemonState,
+    *,
+    generation: int | None = None,
+) -> dict[str, object] | None:
+    if state.recommendation_generator is None or state.track_hydrator is None or state.queue_appender is None:
+        return None
+
+    with state.sync_condition:
+        if state.pending_bridge is not None:
+            return None
+        if generation is not None and state.lookahead_generation != generation:
+            return None
+        previous_tracks = list(state.current_block_tracks)
 
     recommendation = _generate_recommendation_for_state(state)
     if recommendation is None:
@@ -565,10 +724,201 @@ def _queue_replenishment_if_needed(
         return None
 
     spotify_uris = tuple(track.spotify_uri for track in playable_tracks)
+    bridge_audio = _prepare_bridge_narration(state, previous_tracks, playable_tracks)
+    with state.sync_condition:
+        if state.pending_bridge is not None or (generation is not None and state.lookahead_generation != generation):
+            _remove_prepared_bridge_audio(bridge_audio)
+            return None
+
     state.queue_appender(spotify_uris)
     with state.sync_condition:
+        if state.pending_bridge is not None or (generation is not None and state.lookahead_generation != generation):
+            _remove_prepared_bridge_audio(bridge_audio)
+            return None
         state.known_spotify_uris.extend(spotify_uris)
+        state.pending_bridge = PendingBridge(
+            previous_tracks=previous_tracks,
+            next_tracks=list(playable_tracks),
+            next_uris=spotify_uris,
+            audio_file=bridge_audio,
+        )
     return {"queued_track_count": len(spotify_uris), "recommendation": recommendation.to_json()}
+
+
+def _prepare_bridge_narration(
+    state: DaemonState,
+    previous_tracks: list[PlayableTrack],
+    next_tracks: list[PlayableTrack],
+) -> Path | None:
+    if state.narration_preparer is None:
+        return None
+    try:
+        return state.narration_preparer("bridge", previous_tracks, next_tracks)
+    except Exception:
+        return None
+
+
+def _remove_prepared_bridge_audio(audio_file: Path | None) -> None:
+    if audio_file is None:
+        return
+    try:
+        audio_file.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+def _transition_bridge_if_needed(
+    state: DaemonState,
+    playback_state: SpotifyPlaybackState,
+    *,
+    sleep: Callable[[float], None] = time.sleep,
+) -> bool:
+    pending = state.pending_bridge
+    if pending is None:
+        return False
+
+    if pending.audio_file is None or state.narration_player is None:
+        if playback_state.item_uri in pending.next_uris:
+            _complete_pending_bridge(state, pending)
+            return True
+        return False
+
+    transition_plan = _bridge_transition_plan(state, pending, playback_state)
+    if transition_plan is None:
+        return False
+
+    if not transition_plan.play_narration:
+        _complete_pending_bridge(state, pending)
+        return True
+
+    if transition_plan.pause_before_delay:
+        _best_effort_pause(state)
+        if transition_plan.delay_seconds > 0:
+            sleep(transition_plan.delay_seconds)
+    else:
+        if transition_plan.delay_seconds > 0:
+            sleep(transition_plan.delay_seconds)
+        _best_effort_pause(state)
+        sleep(TRANSITION_SILENCE_SECONDS)
+
+    played_narration = False
+    try:
+        state.narration_player(pending.audio_file)
+    except Exception:
+        pass
+    else:
+        played_narration = True
+    if played_narration:
+        sleep(TRANSITION_SILENCE_SECONDS)
+    _best_effort_resume(state)
+
+    _complete_pending_bridge(state, pending)
+    return True
+
+
+def _bridge_transition_plan(
+    state: DaemonState,
+    pending: PendingBridge,
+    playback_state: SpotifyPlaybackState,
+) -> BridgeTransitionPlan | None:
+    if not playback_state.is_playing or playback_state.item_uri is None:
+        return None
+
+    first_next_uri = pending.next_uris[0]
+    if playback_state.item_uri == first_next_uri:
+        progress_seconds = _milliseconds_to_seconds(playback_state.progress_ms)
+        if progress_seconds is not None and progress_seconds > TRANSITION_AUDIO_WINDOW_SECONDS:
+            return BridgeTransitionPlan(delay_seconds=0.0, pause_before_delay=True, play_narration=False)
+        delay_seconds = TRANSITION_SILENCE_SECONDS
+        if progress_seconds is not None:
+            delay_seconds = max(0.0, TRANSITION_SILENCE_SECONDS - progress_seconds)
+        return BridgeTransitionPlan(delay_seconds=delay_seconds, pause_before_delay=True)
+    if playback_state.item_uri in pending.next_uris:
+        return BridgeTransitionPlan(delay_seconds=0.0, pause_before_delay=True, play_narration=False)
+
+    previous_uri = _pending_bridge_previous_uri(state, pending)
+    if playback_state.item_uri != previous_uri:
+        return None
+    remaining_seconds = _remaining_track_seconds(playback_state)
+    if remaining_seconds is None:
+        return None
+    if remaining_seconds + TRANSITION_SILENCE_SECONDS > TRANSITION_AUDIO_WINDOW_SECONDS:
+        return None
+    return BridgeTransitionPlan(delay_seconds=remaining_seconds, pause_before_delay=False)
+
+
+def _pending_bridge_previous_uri(state: DaemonState, pending: PendingBridge) -> str | None:
+    with state.sync_condition:
+        next_start_index = len(state.known_spotify_uris) - len(pending.next_uris)
+        if next_start_index <= 0:
+            return None
+        if tuple(state.known_spotify_uris[next_start_index:]) != pending.next_uris:
+            return None
+        return state.known_spotify_uris[next_start_index - 1]
+
+
+def _remaining_track_seconds(playback_state: SpotifyPlaybackState) -> float | None:
+    if playback_state.progress_ms is None or playback_state.duration_ms is None:
+        return None
+    return max(0.0, (playback_state.duration_ms - playback_state.progress_ms) / 1000)
+
+
+def _milliseconds_to_seconds(value: int | None) -> float | None:
+    return None if value is None else value / 1000
+
+
+def _complete_pending_bridge(state: DaemonState, pending: PendingBridge) -> None:
+    if pending.audio_file is not None:
+        try:
+            pending.audio_file.unlink(missing_ok=True)
+        except OSError:
+            pass
+    start_next_lookahead = False
+    with state.sync_condition:
+        state.current_block_tracks = list(pending.next_tracks)
+        if state.pending_bridge == pending:
+            state.pending_bridge = None
+            start_next_lookahead = True
+    if start_next_lookahead:
+        _start_lookahead_preparation(state)
+
+
+def _best_effort_resume(state: DaemonState) -> None:
+    if state.playback_resumer is None:
+        return
+    try:
+        state.playback_resumer()
+    except Exception:
+        return
+
+
+def _prepare_narration_audio(
+    kind: str,
+    previous_tracks: list[PlayableTrack],
+    next_tracks: list[PlayableTrack] | None,
+    *,
+    narration_dir: Path,
+    narration_config: NarrationConfig,
+    script_generator: ScriptGenerator = generate_script_with_claude,
+    speech_synthesizer: SpeechSynthesizer = synthesize_speech_to_file,
+) -> Path | None:
+    prompt = build_intro_prompt(previous_tracks) if kind == "intro" else build_bridge_prompt(previous_tracks, next_tracks or [])
+    script = script_generator(prompt)
+    if script is None:
+        return None
+
+    output_file = narration_dir / f"{uuid.uuid4().hex}.mp3"
+    try:
+        return speech_synthesizer(script, output_file, narration_config)
+    except Exception:
+        return None
+
+
+def _play_and_remove_narration(audio_file: Path, *, player: Callable[[Path], None]) -> None:
+    try:
+        player(audio_file)
+    finally:
+        audio_file.unlink(missing_ok=True)
 
 
 def _generate_recommendation_for_state(state: DaemonState) -> DJBlock | None:
@@ -700,6 +1050,13 @@ def _playback_started(playback: dict[str, object] | None) -> bool:
     return isinstance(playback, dict) and playback.get("started") is True
 
 
+def _running_playback_payload(state: DaemonState) -> dict[str, object] | None:
+    with state.sync_condition:
+        if state.playback_monitor_status != "running" or not state.known_spotify_uris:
+            return None
+    return {"attached": True, "message": "Claude DJ is already playing."}
+
+
 def _session_start_error_code(
     ready: bool,
     recommendation: DJBlock | None,
@@ -732,6 +1089,8 @@ def run_daemon() -> int:
     runtime_file = get_runtime_file(app_dir)
     database_file = get_database_file(app_dir)
     embedding_config = get_embedding_config()
+    narration_config = get_narration_config()
+    narration_dir = ensure_narration_dir(app_dir) if narration_config is not None else None
     db = connect(database_file)
     _initialize_embedding_schema(db, embedding_config)
     catalog_status = get_catalog_status(db)
@@ -796,10 +1155,39 @@ def run_daemon() -> int:
     def playback_state_fetcher() -> SpotifyPlaybackState:
         return fetch_playback_state_with_token(token_file=get_spotify_token_file(app_dir))
 
+    def playback_options_setter() -> None:
+        token_file = get_spotify_token_file(app_dir)
+        set_repeat_mode_with_token(token_file=token_file, state="off")
+        set_shuffle_with_token(token_file=token_file, enabled=False)
+
     def queue_appender(spotify_uris: tuple[str, ...]) -> None:
         token_file = get_spotify_token_file(app_dir)
         for spotify_uri in spotify_uris:
             add_to_queue_with_token(token_file=token_file, spotify_uri=spotify_uri)
+
+    def narration_preparer(
+        kind: str,
+        previous_tracks: list[PlayableTrack],
+        next_tracks: list[PlayableTrack] | None,
+    ) -> Path | None:
+        if narration_config is None or narration_dir is None:
+            return None
+        return _prepare_narration_audio(
+            kind,
+            previous_tracks,
+            next_tracks,
+            narration_dir=narration_dir,
+            narration_config=narration_config,
+        )
+
+    def narration_player(audio_file: Path) -> None:
+        _play_and_remove_narration(audio_file, player=lambda path: play_audio_file(path))
+
+    def playback_pauser() -> None:
+        pause_playback_with_token(token_file=get_spotify_token_file(app_dir))
+
+    def playback_resumer() -> None:
+        resume_playback_with_token(token_file=get_spotify_token_file(app_dir))
 
     server = create_server(
         catalog_status=catalog_status,
@@ -810,7 +1198,12 @@ def run_daemon() -> int:
         track_hydrator=track_hydrator,
         playback_starter=playback_starter,
         playback_state_fetcher=playback_state_fetcher,
+        playback_options_setter=playback_options_setter,
         queue_appender=queue_appender,
+        narration_preparer=narration_preparer,
+        narration_player=narration_player,
+        playback_pauser=playback_pauser,
+        playback_resumer=playback_resumer,
     )
     host, port = server.server_address
     write_runtime_file(runtime_file, pid=os.getpid(), host=host, port=port)

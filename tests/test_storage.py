@@ -44,68 +44,11 @@ def test_initialize_schema_creates_metadata_and_vector_tables(tmp_path) -> None:
         assert "embedding_metadata" in tables
         assert "index_runs" not in tables
         assert "track_index_status" not in tables
-        assert EMBEDDING_DIMENSIONS == 512
+        assert EMBEDDING_DIMENSIONS == 1024
         preview_columns = {
             row["name"] for row in db.execute("PRAGMA table_info(preview_matches)")
         }
         assert "confidence" not in preview_columns
-    finally:
-        db.close()
-
-
-def test_initialize_schema_removes_legacy_preview_confidence_column(tmp_path) -> None:
-    db = connect(tmp_path / "claude-dj.sqlite3")
-
-    try:
-        db.executescript(
-            """
-            CREATE TABLE tracks (
-              id INTEGER PRIMARY KEY,
-              spotify_track_id TEXT NOT NULL UNIQUE,
-              spotify_uri TEXT NOT NULL,
-              isrc TEXT,
-              title TEXT NOT NULL,
-              artist_name TEXT NOT NULL
-            );
-            CREATE TABLE preview_matches (
-              id INTEGER PRIMARY KEY,
-              track_id INTEGER NOT NULL UNIQUE,
-              provider TEXT NOT NULL,
-              provider_track_id TEXT,
-              preview_url TEXT,
-              match_method TEXT NOT NULL,
-              confidence REAL NOT NULL,
-              status TEXT NOT NULL,
-              failure_reason TEXT,
-              resolved_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-            );
-            INSERT INTO tracks (id, spotify_track_id, spotify_uri, isrc, title, artist_name)
-            VALUES (1, 'spotify-track-1', 'spotify:track:1', 'US123', 'Track One', 'Artist');
-            INSERT INTO preview_matches (
-              track_id,
-              provider,
-              provider_track_id,
-              preview_url,
-              match_method,
-              confidence,
-              status
-            ) VALUES (1, 'deezer', 'deezer-1', 'https://example.com/preview.mp3', 'isrc', 1.0, 'matched');
-            """
-        )
-
-        initialize_schema(db)
-
-        preview_columns = {
-            row["name"] for row in db.execute("PRAGMA table_info(preview_matches)")
-        }
-        match = db.execute("SELECT * FROM preview_matches WHERE track_id = 1").fetchone()
-
-        assert "confidence" not in preview_columns
-        assert match["provider"] == "deezer"
-        assert match["provider_track_id"] == "deezer-1"
-        assert match["preview_url"] == "https://example.com/preview.mp3"
-        assert match["match_method"] == "isrc"
-        assert match["status"] == "matched"
     finally:
         db.close()
 

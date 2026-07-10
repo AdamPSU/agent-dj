@@ -571,6 +571,16 @@ def test_quit_stops_running_daemon(monkeypatch, tmp_path) -> None:
     assert not thread.is_alive()
 
 
+def test_quit_is_successful_when_daemon_is_not_running(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("CLAUDE_DJ_HOME", str(tmp_path))
+    stdout = io.StringIO()
+
+    exit_code = cli.run(["quit"], stdout=stdout)
+
+    assert exit_code == 0
+    assert "Claude DJ daemon is not running" in stdout.getvalue()
+
+
 def test_spotify_login_runs_auth_flow(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("CLAUDE_DJ_HOME", str(tmp_path))
     monkeypatch.setenv("SPOTIFY_CLIENT_ID", "client-id")

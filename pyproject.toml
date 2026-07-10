@@ -6,6 +6,7 @@ readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "librosa>=0.11.0",
+    "miniaudio>=1.61.0",
     "muq @ git+https://github.com/tencent-ailab/MuQ.git@28847ea50cd31ac4b8b6a7dacc051ad7d1c7606a",
     "sqlite-vec>=0.1.9",
     "soundfile>=0.13.1",

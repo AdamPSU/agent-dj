@@ -1,6 +1,6 @@
 """Embedding similarity recommendations for Claude DJ.
 
-This module will own nearest-neighbor search and seed-song similarity selection.
+This module owns nearest-neighbor search and seed-song similarity selection.
 """
 
 from dataclasses import dataclass
@@ -15,7 +15,7 @@ from claude_dj.storage.db import (
 
 
 MIN_DJ_BLOCK_SIZE = 3
-MAX_DJ_BLOCK_SIZE = 8
+MAX_DJ_BLOCK_SIZE = 6
 
 
 _NEAREST_NEIGHBORS_QUERY = """

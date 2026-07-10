@@ -1,6 +1,6 @@
 """CLI entrypoint used by /dj commands.
 
-This module will parse user commands and talk to the local daemon.
+This module parses user commands and talks to the local daemon.
 """
 
 from pathlib import Path
@@ -61,10 +61,7 @@ def run(args: list[str], stdout: TextIO = sys.stdout, stderr: TextIO = sys.stder
 
 def start(stdout: TextIO, stderr: TextIO) -> int:
     """Start or attach to the local Claude DJ daemon."""
-    runtime_info = load_runtime_info()
-    if runtime_info is None or not is_daemon_running(runtime_info):
-        spawn_daemon()
-        runtime_info = wait_for_daemon()
+    runtime_info = ensure_daemon_running()
 
     try:
         response = post_json(
@@ -89,10 +86,7 @@ def start(stdout: TextIO, stderr: TextIO) -> int:
 
 def sync(stdout: TextIO, stderr: TextIO) -> int:
     """Start or join local song storage in the daemon."""
-    runtime_info = load_runtime_info()
-    if runtime_info is None or not is_daemon_running(runtime_info):
-        spawn_daemon()
-        runtime_info = wait_for_daemon()
+    runtime_info = ensure_daemon_running()
 
     response = post_json(runtime_info, "/sync/start", {})
     stdout.write(f"{response['message']}\n")
@@ -300,7 +294,7 @@ def quit_daemon(stdout: TextIO) -> int:
     runtime_info = load_runtime_info()
     if runtime_info is None or not is_daemon_running(runtime_info):
         stdout.write("Claude DJ daemon is not running.\n")
-        return 1
+        return 0
 
     response = post_json(runtime_info, "/daemon/quit", {})
     stdout.write(f"{response['message']}\n")
@@ -397,6 +391,15 @@ def load_runtime_info(runtime_file: Path | None = None) -> RuntimeInfo | None:
     except (FileNotFoundError, json.JSONDecodeError):
         return None
     return RuntimeInfo.from_json(data)
+
+
+def ensure_daemon_running() -> RuntimeInfo:
+    """Return a live daemon location, spawning the daemon when needed."""
+    runtime_info = load_runtime_info()
+    if runtime_info is not None and is_daemon_running(runtime_info):
+        return runtime_info
+    spawn_daemon()
+    return wait_for_daemon()
 
 
 def is_daemon_running(runtime_info: RuntimeInfo) -> bool:

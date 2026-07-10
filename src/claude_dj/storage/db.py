@@ -1,6 +1,6 @@
 """SQLite persistence for Claude DJ.
 
-This module will own sessions, tracks, previews, embeddings, and decision history storage.
+This module owns tracks, previews, embeddings, and playlist membership storage.
 """
 
 from collections.abc import Sequence
@@ -12,7 +12,7 @@ import sqlite3
 import sqlite_vec
 
 
-EMBEDDING_DIMENSIONS = 512
+EMBEDDING_DIMENSIONS = 1024
 
 
 @dataclass(frozen=True)
@@ -141,7 +141,6 @@ def initialize_schema(
 ) -> None:
     """Create the initial metadata and vector-search schema if needed."""
     _drop_embedding_tables_if_incompatible(db, dimensions, model_name, model_version)
-    _migrate_preview_matches_without_confidence(db)
     db.executescript(
         """
         CREATE TABLE IF NOT EXISTS tracks (
@@ -638,53 +637,3 @@ def _drop_embedding_tables_if_incompatible(
 def _drop_embedding_tables(db: sqlite3.Connection) -> None:
     db.execute("DROP TABLE IF EXISTS track_embeddings")
     db.execute("DROP TABLE IF EXISTS embedding_metadata")
-
-
-def _migrate_preview_matches_without_confidence(db: sqlite3.Connection) -> None:
-    columns = {row["name"] for row in db.execute("PRAGMA table_info(preview_matches)")}
-    if "confidence" not in columns:
-        return
-
-    db.executescript(
-        """
-        ALTER TABLE preview_matches RENAME TO preview_matches_legacy_confidence;
-
-        CREATE TABLE preview_matches (
-          id INTEGER PRIMARY KEY,
-          track_id INTEGER NOT NULL UNIQUE,
-          provider TEXT NOT NULL,
-          provider_track_id TEXT,
-          preview_url TEXT,
-          match_method TEXT NOT NULL,
-          status TEXT NOT NULL,
-          failure_reason TEXT,
-          resolved_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-          FOREIGN KEY (track_id) REFERENCES tracks(id) ON DELETE CASCADE
-        );
-
-        INSERT INTO preview_matches (
-          id,
-          track_id,
-          provider,
-          provider_track_id,
-          preview_url,
-          match_method,
-          status,
-          failure_reason,
-          resolved_at
-        )
-        SELECT
-          id,
-          track_id,
-          provider,
-          provider_track_id,
-          preview_url,
-          match_method,
-          status,
-          failure_reason,
-          resolved_at
-        FROM preview_matches_legacy_confidence;
-
-        DROP TABLE preview_matches_legacy_confidence;
-        """
-    )

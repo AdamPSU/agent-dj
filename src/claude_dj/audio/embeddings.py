@@ -59,7 +59,7 @@ class EmbeddingGenerationSummary:
 
 
 class PreviewEmbedder:
-    """Interface implemented by embedding providers."""
+    """Embedding implementation used by preview-audio processing."""
 
     model_name: str
     model_version: str | None
@@ -77,6 +77,12 @@ def generate_audio_embeddings(
 ) -> EmbeddingGenerationSummary:
     """Generate embeddings for matched Deezer preview URLs."""
     resolved_embedder = embedder or create_preview_embedder(get_embedding_config())
+    initialize_schema(
+        db,
+        dimensions=resolved_embedder.dimensions,
+        model_name=resolved_embedder.model_name,
+        model_version=resolved_embedder.model_version,
+    )
     candidates = fetch_tracks_needing_embeddings(db, limit=limit)
     if not candidates:
         return EmbeddingGenerationSummary(
@@ -87,7 +93,6 @@ def generate_audio_embeddings(
 
     embedded_count = 0
     failed_count = 0
-    active_model: tuple[str, str | None, int] | None = None
 
     for candidate in candidates:
         try:
@@ -95,22 +100,6 @@ def generate_audio_embeddings(
         except PreviewEmbeddingError:
             failed_count += 1
             continue
-
-        model_key = (
-            resolved_embedder.model_name,
-            resolved_embedder.model_version,
-            resolved_embedder.dimensions,
-        )
-        if model_key != active_model:
-            if active_model is not None:
-                embedded_count = 0
-            initialize_schema(
-                db,
-                dimensions=resolved_embedder.dimensions,
-                model_name=resolved_embedder.model_name,
-                model_version=resolved_embedder.model_version,
-            )
-            active_model = model_key
 
         if not _valid_embedding(embedding, resolved_embedder.dimensions):
             failed_count += 1
@@ -137,7 +126,7 @@ def generate_audio_embeddings(
 
 
 def create_preview_embedder(config: EmbeddingConfig) -> PreviewEmbedder:
-    """Create the configured embedding provider."""
+    """Create the local MuQ preview embedder."""
     return LocalMuQEmbedder(
         model_name=config.model_name,
         model_version=config.model_version,

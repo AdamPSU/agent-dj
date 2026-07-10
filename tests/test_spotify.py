@@ -25,9 +25,17 @@ from claude_dj.adapters.spotify import (
     fetch_playback_state,
     fetch_playback_state_with_token,
     load_token,
+    pause_playback,
+    pause_playback_with_token,
     pkce_challenge,
     refresh_access_token,
+    resume_playback,
+    resume_playback_with_token,
     save_token,
+    set_repeat_mode,
+    set_repeat_mode_with_token,
+    set_shuffle,
+    set_shuffle_with_token,
     start_playback,
     start_playback_with_token,
 )
@@ -343,9 +351,11 @@ def test_fetch_playback_state_normalizes_current_track() -> None:
             return json.dumps(
                 {
                     "is_playing": True,
+                    "progress_ms": 1234,
                     "item": {
                         "type": "track",
                         "uri": "spotify:track:1",
+                        "duration_ms": 4567,
                     },
                 }
             ).encode("utf-8")
@@ -361,7 +371,12 @@ def test_fetch_playback_state_normalizes_current_track() -> None:
     assert request.get_method() == "GET"
     assert request.headers["Authorization"] == "Bearer access-token"
     assert timeout == 10
-    assert state == SpotifyPlaybackState(item_uri="spotify:track:1", is_playing=True)
+    assert state == SpotifyPlaybackState(
+        item_uri="spotify:track:1",
+        is_playing=True,
+        progress_ms=1234,
+        duration_ms=4567,
+    )
 
 
 def test_fetch_playback_state_returns_idle_when_spotify_has_no_playback() -> None:
@@ -410,6 +425,109 @@ def test_add_to_queue_posts_track_uri_to_active_device() -> None:
     assert request.get_method() == "POST"
     assert request.headers["Authorization"] == "Bearer access-token"
     assert query == {"uri": ["spotify:track:1"], "device_id": ["device-1"]}
+    assert timeout == 10
+
+
+def test_set_repeat_mode_puts_repeat_request() -> None:
+    requests = []
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, traceback):
+            return False
+
+    def fake_urlopen(request, timeout):
+        requests.append((request, timeout))
+        return FakeResponse()
+
+    set_repeat_mode("access-token", "off", device_id="device-1", urlopen=fake_urlopen)
+
+    request, timeout = requests[0]
+    parsed = urlparse(request.full_url)
+    query = parse_qs(parsed.query)
+    assert parsed.scheme == "https"
+    assert parsed.netloc == "api.spotify.com"
+    assert parsed.path == "/v1/me/player/repeat"
+    assert request.get_method() == "PUT"
+    assert request.headers["Authorization"] == "Bearer access-token"
+    assert query == {"state": ["off"], "device_id": ["device-1"]}
+    assert timeout == 10
+
+
+def test_set_shuffle_puts_shuffle_request() -> None:
+    requests = []
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, traceback):
+            return False
+
+    def fake_urlopen(request, timeout):
+        requests.append((request, timeout))
+        return FakeResponse()
+
+    set_shuffle("access-token", False, device_id="device-1", urlopen=fake_urlopen)
+
+    request, timeout = requests[0]
+    parsed = urlparse(request.full_url)
+    query = parse_qs(parsed.query)
+    assert parsed.scheme == "https"
+    assert parsed.netloc == "api.spotify.com"
+    assert parsed.path == "/v1/me/player/shuffle"
+    assert request.get_method() == "PUT"
+    assert request.headers["Authorization"] == "Bearer access-token"
+    assert query == {"state": ["false"], "device_id": ["device-1"]}
+    assert timeout == 10
+
+
+def test_pause_playback_puts_pause_request() -> None:
+    requests = []
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, traceback):
+            return False
+
+    def fake_urlopen(request, timeout):
+        requests.append((request, timeout))
+        return FakeResponse()
+
+    pause_playback("access-token", urlopen=fake_urlopen)
+
+    request, timeout = requests[0]
+    assert request.full_url == "https://api.spotify.com/v1/me/player/pause"
+    assert request.get_method() == "PUT"
+    assert request.headers["Authorization"] == "Bearer access-token"
+    assert timeout == 10
+
+
+def test_resume_playback_puts_play_request_without_body() -> None:
+    requests = []
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, traceback):
+            return False
+
+    def fake_urlopen(request, timeout):
+        requests.append((request, timeout))
+        return FakeResponse()
+
+    resume_playback("access-token", urlopen=fake_urlopen)
+
+    request, timeout = requests[0]
+    assert request.full_url == "https://api.spotify.com/v1/me/player/play"
+    assert request.get_method() == "PUT"
+    assert request.data is None
+    assert request.headers["Authorization"] == "Bearer access-token"
     assert timeout == 10
 
 
@@ -488,6 +606,156 @@ def test_add_to_queue_with_token_refreshes_once_on_expired_access_token(tmp_path
     )
 
     assert queue_tokens == ["Bearer old-access", "Bearer new-access"]
+
+
+def test_set_repeat_mode_with_token_refreshes_once_on_expired_access_token(tmp_path) -> None:
+    token_file = tmp_path / "spotify-token.json"
+    save_token(token_file, {"access_token": "old-access", "refresh_token": "refresh"})
+    repeat_tokens = []
+
+    class FakeResponse:
+        def __init__(self, payload=None):
+            self.payload = payload or {}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, traceback):
+            return False
+
+        def read(self):
+            return json.dumps(self.payload).encode("utf-8")
+
+    def fake_urlopen(request, timeout):
+        if request.full_url.startswith("https://api.spotify.com/v1/me/player/repeat"):
+            repeat_tokens.append(request.headers["Authorization"])
+            if len(repeat_tokens) == 1:
+                raise urllib.error.HTTPError(request.full_url, 401, "Unauthorized", {}, None)
+            return FakeResponse()
+        if request.full_url == "https://accounts.spotify.com/api/token":
+            return FakeResponse({"access_token": "new-access", "expires_in": 3600})
+        raise AssertionError(f"unexpected URL {request.full_url}")
+
+    set_repeat_mode_with_token(
+        config=SpotifyConfig(client_id="client-id", redirect_uri="http://127.0.0.1:8888/callback"),
+        token_file=token_file,
+        state="off",
+        urlopen=fake_urlopen,
+    )
+
+    assert repeat_tokens == ["Bearer old-access", "Bearer new-access"]
+
+
+def test_set_shuffle_with_token_refreshes_once_on_expired_access_token(tmp_path) -> None:
+    token_file = tmp_path / "spotify-token.json"
+    save_token(token_file, {"access_token": "old-access", "refresh_token": "refresh"})
+    shuffle_tokens = []
+
+    class FakeResponse:
+        def __init__(self, payload=None):
+            self.payload = payload or {}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, traceback):
+            return False
+
+        def read(self):
+            return json.dumps(self.payload).encode("utf-8")
+
+    def fake_urlopen(request, timeout):
+        if request.full_url.startswith("https://api.spotify.com/v1/me/player/shuffle"):
+            shuffle_tokens.append(request.headers["Authorization"])
+            if len(shuffle_tokens) == 1:
+                raise urllib.error.HTTPError(request.full_url, 401, "Unauthorized", {}, None)
+            return FakeResponse()
+        if request.full_url == "https://accounts.spotify.com/api/token":
+            return FakeResponse({"access_token": "new-access", "expires_in": 3600})
+        raise AssertionError(f"unexpected URL {request.full_url}")
+
+    set_shuffle_with_token(
+        config=SpotifyConfig(client_id="client-id", redirect_uri="http://127.0.0.1:8888/callback"),
+        token_file=token_file,
+        enabled=False,
+        urlopen=fake_urlopen,
+    )
+
+    assert shuffle_tokens == ["Bearer old-access", "Bearer new-access"]
+
+
+def test_pause_playback_with_token_refreshes_once_on_expired_access_token(tmp_path) -> None:
+    token_file = tmp_path / "spotify-token.json"
+    save_token(token_file, {"access_token": "old-access", "refresh_token": "refresh"})
+    pause_tokens = []
+
+    class FakeResponse:
+        def __init__(self, payload=None):
+            self.payload = payload or {}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, traceback):
+            return False
+
+        def read(self):
+            return json.dumps(self.payload).encode("utf-8")
+
+    def fake_urlopen(request, timeout):
+        if request.full_url == "https://api.spotify.com/v1/me/player/pause":
+            pause_tokens.append(request.headers["Authorization"])
+            if len(pause_tokens) == 1:
+                raise urllib.error.HTTPError(request.full_url, 401, "Unauthorized", {}, None)
+            return FakeResponse()
+        if request.full_url == "https://accounts.spotify.com/api/token":
+            return FakeResponse({"access_token": "new-access", "expires_in": 3600})
+        raise AssertionError(f"unexpected URL {request.full_url}")
+
+    pause_playback_with_token(
+        config=SpotifyConfig(client_id="client-id", redirect_uri="http://127.0.0.1:8888/callback"),
+        token_file=token_file,
+        urlopen=fake_urlopen,
+    )
+
+    assert pause_tokens == ["Bearer old-access", "Bearer new-access"]
+
+
+def test_resume_playback_with_token_refreshes_once_on_expired_access_token(tmp_path) -> None:
+    token_file = tmp_path / "spotify-token.json"
+    save_token(token_file, {"access_token": "old-access", "refresh_token": "refresh"})
+    resume_tokens = []
+
+    class FakeResponse:
+        def __init__(self, payload=None):
+            self.payload = payload or {}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, traceback):
+            return False
+
+        def read(self):
+            return json.dumps(self.payload).encode("utf-8")
+
+    def fake_urlopen(request, timeout):
+        if request.full_url == "https://api.spotify.com/v1/me/player/play":
+            resume_tokens.append(request.headers["Authorization"])
+            if len(resume_tokens) == 1:
+                raise urllib.error.HTTPError(request.full_url, 401, "Unauthorized", {}, None)
+            return FakeResponse()
+        if request.full_url == "https://accounts.spotify.com/api/token":
+            return FakeResponse({"access_token": "new-access", "expires_in": 3600})
+        raise AssertionError(f"unexpected URL {request.full_url}")
+
+    resume_playback_with_token(
+        config=SpotifyConfig(client_id="client-id", redirect_uri="http://127.0.0.1:8888/callback"),
+        token_file=token_file,
+        urlopen=fake_urlopen,
+    )
+
+    assert resume_tokens == ["Bearer old-access", "Bearer new-access"]
 
 
 def test_start_playback_with_token_refreshes_once_on_expired_access_token(tmp_path) -> None:
