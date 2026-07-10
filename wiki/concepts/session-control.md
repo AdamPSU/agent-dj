@@ -5,7 +5,7 @@ date: 2026-07-08
 tags: [session-control, daemon, lifecycle, roadmap]
 ---
 
-Session control is the boundary between a user issuing `/dj` commands and the daemon owning long-running music automation. Current behavior is intentionally simple: `/dj start` sends session id `local-cli`, and the daemon records that value as the active session.[^1][^2]
+Session control is the boundary between a user issuing `/dj` commands and the daemon owning background catalog work. Current behavior is intentionally simple: `/dj start` sends session id `local-cli`, and the daemon records that value as the active session.[^1][^2]
 
 ## Current Behavior
 
@@ -13,24 +13,22 @@ Session control is the boundary between a user issuing `/dj` commands and the da
 stateDiagram-v2
     [*] --> NoDaemon
     NoDaemon --> DaemonRunning: /dj start spawns daemon
-    DaemonRunning --> Syncing: /session/start
-    Syncing --> Playing: ready tracks and playback started
-    Playing --> Attached: repeated /dj start while monitor active
-    Playing --> Stopped: /dj quit
-    Attached --> Playing
+    DaemonRunning --> AttachedAndSyncing: /session/start
+    AttachedAndSyncing --> Attached: sync completes or fails
+    Attached --> AttachedAndSyncing: repeated /dj start
+    Attached --> Stopped: /dj quit
 ```
 
-When playback is already running, another `/session/start` can attach and receive the current playback payload instead of starting a new block.[^2]
+Repeated `/session/start` calls update the active session id and join the existing sync thread when sync is already running.[^2]
 
 ## Current State Fields
 
 | Field | Meaning |
 | --- | --- |
 | `active_session_id` | Session id last written by `/session/start`; currently `local-cli` from the CLI. |
-| `known_spotify_uris` | The daemon's known Claude DJ sequence for playback monitoring. |
-| `current_block_tracks` | Track metadata for the current generated block. |
-| `pending_bridge` | Prepared narration for the next handoff, if any. |
-| `playback_monitor_thread` | Background monitor that watches Spotify and appends the next block. |
+| `sync_status` | Current catalog-sync lifecycle state. |
+| `sync_thread` | At most one background catalog-sync worker. |
+| `sync_indexing` | Latest Spotify, preview, and embedding phase summaries. |
 
 These fields live in the daemon's in-memory `DaemonState`.[^2]
 
@@ -38,7 +36,7 @@ These fields live in the daemon's in-memory `DaemonState`.[^2]
 
 | Command | Intended meaning | Current status |
 | --- | --- | --- |
-| `/dj stop` | Stop active music automation without necessarily shutting down the daemon. | Not implemented. |
+| `/dj stop` | Stop future active music automation without necessarily shutting down the daemon. | Not implemented. |
 | `/dj detach` | Disconnect this OpenCode session while leaving daemon state intact. | Not implemented. |
 | `/dj takeover` | Move active control to this session when another session owns the daemon. | Not implemented. |
 | `/dj quit` | Shut down the daemon process. | Implemented. |

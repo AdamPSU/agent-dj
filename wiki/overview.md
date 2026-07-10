@@ -20,7 +20,7 @@ This wiki is the single project knowledge base for Claude DJ. New ideas should u
 graph TD
     A["Overview"] --> B["Product"]
     A --> C["Architecture"]
-    A --> D["Playback and recommendation"]
+    A --> D["Disconnected playback and recommendation primitives"]
     A --> E["Embeddings and providers"]
     A --> F["Narration"]
     A --> G["Roadmap"]
@@ -42,8 +42,8 @@ graph TD
 | What is Claude DJ? | [Claude DJ](entities/claude-dj.md) |
 | Why is there a daemon? | [Local Daemon Architecture](concepts/local-daemon-architecture.md) |
 | How does session ownership work? | [Session Control](concepts/session-control.md) |
-| How does `/dj start` control Spotify? | [Spotify Playback Orchestration](concepts/spotify-playback-orchestration.md) |
-| How are recommendations chosen? | [Recommendation Loop](concepts/recommendation-loop.md) |
+| Which Spotify playback primitives are preserved? | [Spotify Playback Orchestration](concepts/spotify-playback-orchestration.md) |
+| Which recommendation implementation is preserved but disconnected? | [Recommendation Loop](concepts/recommendation-loop.md) |
 | What does the Spotify adapter own? | [Spotify Adapter](entities/spotify-adapter.md) |
 | What is the embedding-source policy? | [Provider-Gated Audio Embeddings](concepts/provider-gated-audio-embeddings.md) |
 | Which audio providers have been considered? | [Audio Source Provider Options](comparisons/audio-source-provider-options.md) |
@@ -56,9 +56,9 @@ graph TD
 | --- | --- | --- |
 | Claude DJ installs as a persistent CLI and global OpenCode `/dj` command. | [Claude DJ](entities/claude-dj.md) | README and installer code.[^1][^2] |
 | The CLI currently accepts `start`, `sync`, `status`, `quit`, `spotify-login`, `devices`, and `device`. | [Claude DJ](entities/claude-dj.md) | CLI parser.[^3] |
-| The local daemon owns sync, recommendation, playback monitoring, and optional narration. | [Local Daemon Architecture](concepts/local-daemon-architecture.md) | Daemon state and handlers.[^4] |
-| The recommendation block size is currently 3-6 tracks. | [Recommendation Loop](concepts/recommendation-loop.md) | Similarity constants.[^5] |
-| Optional narration uses Claude-generated scripts and ElevenLabs audio when configured. | [Optional Narration](concepts/optional-narration.md) | Narration script and TTS adapters.[^6][^7] |
+| The local daemon owns session attachment and background catalog sync. | [Local Daemon Architecture](concepts/local-daemon-architecture.md) | Daemon state and handlers.[^4] |
+| The 3-6 track similarity implementation remains isolated and is not wired into runtime behavior. | [Recommendation Loop](concepts/recommendation-loop.md) | Similarity constants and production imports.[^5] |
+| Narration scripts and ElevenLabs audio generation remain isolated primitives. | [Optional Narration](concepts/optional-narration.md) | Narration script and TTS adapters.[^6][^7] |
 
 ## Maintenance Rule
 
@@ -66,6 +66,7 @@ Update the wiki directly. Do not create a parallel product-note tree; this wiki 
 
 ## Recent Updates
 
+- 2026-07-09: Disconnected recommendation, generated playback, queue lookahead, and narration orchestration from daemon and CLI runtime paths.
 - 2026-07-08: Merged legacy product, architecture, future-plan, provider, and narration notes into canonical llmwiki pages.
 - 2026-07-08: Initialized the repo-local llmwiki scaffold and indexed repository sources.
 

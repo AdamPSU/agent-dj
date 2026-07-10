@@ -7,6 +7,12 @@ tags: [log, migration, maintenance]
 
 Chronological record of ingests, queries, and maintenance passes.
 
+## [2026-07-09] maintenance | Disconnect recommendation runtime glue
+
+- Preserved the similarity recommender as isolated code while removing daemon and CLI imports.
+- Removed generated playback, queue lookahead, cooldown, playback monitoring, and bridge narration orchestration from the daemon.
+- Changed `/dj start` to attach immediately and start or join background catalog sync.
+
 ## [2026-07-08] migration | Curated llmwiki migration kickoff
 
 - Initialized the repo-local llmwiki scaffold in `claude-dj-plugin`.

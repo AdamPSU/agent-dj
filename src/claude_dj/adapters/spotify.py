@@ -95,7 +95,7 @@ class SpotifyDevice:
 
 @dataclass(frozen=True)
 class SpotifyPlaybackState:
-    """Current Spotify playback state needed by the DJ monitor."""
+    """Current playback state returned by Spotify."""
 
     item_uri: str | None
     is_playing: bool

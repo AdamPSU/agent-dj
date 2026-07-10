@@ -22,7 +22,6 @@ class CatalogStatus:
     source_count: int
     track_count: int
     embedding_count: int
-    ready_track_count: int = 0
     preview_match_count: int = 0
     preview_pending_count: int | None = None
     embedding_pending_count: int | None = None
@@ -43,11 +42,6 @@ class CatalogStatus:
         return self._embedding_pending_count() > 0
 
     @property
-    def ready_for_audio_similarity(self) -> bool:
-        """Return whether the local catalog can support embedding similarity."""
-        return self.embedding_count > 0
-
-    @property
     def needs_onboarding(self) -> bool:
         """Return whether any catalog-building phase still needs work."""
         return self.needs_spotify_index or self.needs_preview_resolution or self.needs_embeddings
@@ -60,12 +54,10 @@ class CatalogStatus:
             "preview_match_count": self.preview_match_count,
             "preview_pending_count": self._preview_pending_count(),
             "embedding_count": self.embedding_count,
-            "ready_track_count": self.ready_track_count,
             "embedding_pending_count": self._embedding_pending_count(),
             "needs_spotify_index": self.needs_spotify_index,
             "needs_preview_resolution": self.needs_preview_resolution,
             "needs_embeddings": self.needs_embeddings,
-            "ready_for_audio_similarity": self.ready_for_audio_similarity,
             "needs_onboarding": self.needs_onboarding,
         }
 
@@ -220,7 +212,6 @@ def get_catalog_status(db: sqlite3.Connection) -> CatalogStatus:
         preview_match_count=_count(db, "preview_matches"),
         preview_pending_count=_preview_pending_count(db),
         embedding_count=_count(db, "track_embeddings"),
-        ready_track_count=_ready_track_count(db),
         embedding_pending_count=_embedding_pending_count(db),
     )
 
@@ -576,19 +567,6 @@ def _embedding_pending_count(db: sqlite3.Connection) -> int:
           AND preview_matches.preview_url IS NOT NULL
           AND preview_matches.preview_url != ''
           AND track_embeddings.track_id IS NULL
-        """
-    ).fetchone()
-    return int(row["count"])
-
-
-def _ready_track_count(db: sqlite3.Connection) -> int:
-    row = db.execute(
-        """
-        SELECT COUNT(*) AS count
-        FROM tracks
-        JOIN track_embeddings ON track_embeddings.track_id = tracks.id
-        WHERE tracks.spotify_uri IS NOT NULL
-          AND tracks.spotify_uri != ''
         """
     ).fetchone()
     return int(row["count"])

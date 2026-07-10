@@ -27,7 +27,6 @@ from claude_dj.models import RuntimeInfo
 
 
 STARTUP_TIMEOUT_SECONDS = 2.0
-SESSION_START_TIMEOUT_SECONDS = 600
 
 
 def main() -> int:
@@ -68,7 +67,6 @@ def start(stdout: TextIO, stderr: TextIO) -> int:
             runtime_info,
             "/session/start",
             {"session_id": "local-cli"},
-            timeout_seconds=SESSION_START_TIMEOUT_SECONDS,
         )
     except (OSError, TimeoutError, urllib.error.URLError, http.client.RemoteDisconnected):
         spawn_daemon()
@@ -77,10 +75,9 @@ def start(stdout: TextIO, stderr: TextIO) -> int:
             runtime_info,
             "/session/start",
             {"session_id": "local-cli"},
-            timeout_seconds=SESSION_START_TIMEOUT_SECONDS,
         )
     stdout.write(f"{response['message']}\n")
-    write_start_details(response, stdout)
+    stdout.write("Storing your songs on device.\n")
     return 0
 
 
@@ -91,61 +88,6 @@ def sync(stdout: TextIO, stderr: TextIO) -> int:
     response = post_json(runtime_info, "/sync/start", {})
     stdout.write(f"{response['message']}\n")
     return 0
-
-
-def write_start_details(response: dict[str, object], stdout: TextIO) -> None:
-    """Print startup catalog/indexing details returned by the daemon."""
-    spotify_indexing = _spotify_indexing(response)
-    error_code = spotify_indexing.get("error_code")
-    if error_code in {"spotify_auth_required", "spotify_access_denied"}:
-        message = spotify_indexing.get("message")
-        if isinstance(message, str):
-            stdout.write(f"{message}\n")
-        if error_code == "spotify_auth_required":
-            stdout.write("Run: /dj spotify-login\n")
-        return
-
-    if write_playback_status(response, stdout):
-        return
-
-    stdout.write("Storing your songs on device.\n")
-    return
-
-
-def write_playback_status(response: dict[str, object], stdout: TextIO) -> bool:
-    """Print playback details returned by session start when available."""
-    playback = _dict_value(response, "playback")
-    if not playback:
-        return False
-
-    if playback.get("started") is True:
-        first_track = _dict_value(playback, "first_track")
-        title = _display(first_track.get("title"))
-        artist_name = _display(first_track.get("artist_name"))
-        more_count = max(_int_value(playback, "track_count") - 1, 0)
-        suffix = f" + {more_count} more" if more_count else ""
-        device_suffix = _playback_device_suffix(playback)
-        stdout.write(f"Started Claude DJ block: {title} by {artist_name}{suffix}{device_suffix}.\n")
-        return True
-
-    message = playback.get("message")
-    if isinstance(message, str) and message:
-        stdout.write(f"{message}\n")
-        return True
-
-    return False
-
-
-def _spotify_indexing(response: dict[str, object]) -> dict[str, object]:
-    return _indexing_result(response, "spotify")
-
-
-def _indexing_result(response: dict[str, object], key: str) -> dict[str, object]:
-    indexing = response.get("indexing")
-    if not isinstance(indexing, dict):
-        return {}
-    result = indexing.get(key)
-    return result if isinstance(result, dict) else {}
 
 
 def status(stdout: TextIO) -> int:
@@ -170,8 +112,7 @@ def write_status_details(response: dict[str, object], stdout: TextIO) -> None:
     sync = _dict_value(response, "sync")
     catalog = _dict_value(response, "catalog")
     indexing = _dict_value(response, "indexing")
-    playback = _dict_value(response, "playback")
-    if not sync and not catalog and not indexing and not playback:
+    if not sync and not catalog and not indexing:
         return
 
     stdout.write("\n")
@@ -180,14 +121,12 @@ def write_status_details(response: dict[str, object], stdout: TextIO) -> None:
         error = sync.get("error")
         if isinstance(error, str) and error:
             stdout.write(f"Error: {error}\n")
+    if indexing:
+        write_spotify_indexing_error(indexing, stdout)
     if catalog:
         write_catalog_status(catalog, indexing, stdout)
-    if catalog:
-        write_readiness_status(catalog, stdout)
     if indexing:
         write_last_run_status(indexing, stdout)
-    if playback:
-        write_playback_monitor_status(playback, stdout)
 
 
 def write_catalog_status(catalog: dict[str, object], indexing: dict[str, object], stdout: TextIO) -> None:
@@ -212,20 +151,17 @@ def write_catalog_status(catalog: dict[str, object], indexing: dict[str, object]
         stdout.write(f"  Model: {model}, {dimensions} dimensions\n")
 
 
-def write_readiness_status(catalog: dict[str, object], stdout: TextIO) -> None:
-    """Print readiness details from catalog status."""
-    stdout.write("\n")
-    stdout.write("Readiness:\n")
-    stdout.write(f"  Ready tracks: {_int_value(catalog, 'ready_track_count')}\n")
-    audio_similarity = "ready" if catalog.get("ready_for_audio_similarity") is True else "not ready"
-    still_loading = (
-        catalog.get("needs_onboarding") is True
-        or _int_value(catalog, "preview_pending_count") > 0
-        or _int_value(catalog, "embedding_pending_count") > 0
-    )
-    onboarding = "still loading songs" if still_loading else "complete"
-    stdout.write(f"  Audio similarity: {audio_similarity}\n")
-    stdout.write(f"  Onboarding: {onboarding}\n")
+def write_spotify_indexing_error(indexing: dict[str, object], stdout: TextIO) -> None:
+    """Print Spotify indexing failures reported by background sync."""
+    spotify = _dict_value(indexing, "spotify")
+    error_code = spotify.get("error_code")
+    if error_code not in {"spotify_auth_required", "spotify_access_denied"}:
+        return
+    message = spotify.get("message")
+    if isinstance(message, str) and message:
+        stdout.write(f"{message}\n")
+    if error_code == "spotify_auth_required":
+        stdout.write("Run: /dj spotify-login\n")
 
 
 def write_last_run_status(indexing: dict[str, object], stdout: TextIO) -> None:
@@ -259,25 +195,9 @@ def write_last_run_status(indexing: dict[str, object], stdout: TextIO) -> None:
         )
 
 
-def write_playback_monitor_status(playback: dict[str, object], stdout: TextIO) -> None:
-    """Print playback monitor status from daemon status."""
-    stdout.write("Playback:\n")
-    stdout.write(f"  Monitor: {_display(playback.get('status'))}\n")
-    stdout.write(f"  Known queue tracks: {_int_value(playback, 'known_track_count')}\n")
-    error = playback.get("error")
-    if isinstance(error, str) and error:
-        stdout.write(f"  Error: {error}\n")
-
-
 def _dict_value(data: dict[str, object], key: str) -> dict[str, object]:
     value = data.get(key)
     return value if isinstance(value, dict) else {}
-
-
-def _playback_device_suffix(playback: dict[str, object]) -> str:
-    device = _dict_value(playback, "device")
-    name = device.get("name")
-    return f" on {name}" if isinstance(name, str) and name else ""
 
 
 def _int_value(data: dict[str, object], key: str) -> int:

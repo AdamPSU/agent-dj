@@ -5,7 +5,7 @@ date: 2026-07-08
 tags: [claude-dj, product, commands, opencode]
 ---
 
-Claude DJ is a local OpenCode companion for coding sessions. It installs a persistent `claude-dj` CLI and a global `/dj` OpenCode command, then uses Spotify as the playback target while a local daemon keeps music automation alive beyond a single command invocation.[^1][^2]
+Claude DJ is a local OpenCode companion for coding sessions. It installs a persistent `claude-dj` CLI and a global `/dj` OpenCode command. The current daemon keeps catalog sync alive beyond a single command invocation while recommendation and playback composition are rebuilt.[^1][^2]
 
 ## Product Boundary
 
@@ -16,9 +16,8 @@ graph LR
     A["OpenCode user"] --> B["/dj command"]
     B --> C["Installed claude-dj CLI"]
     C --> D["Local daemon"]
-    D --> E["Spotify playback"]
+    C --> E["Spotify login and devices"]
     D --> F["Local catalog and embeddings"]
-    D --> G["Optional narration"]
 ```
 
 ## Install And Runtime
@@ -31,10 +30,10 @@ Runtime state lives outside the repo. By default, Claude DJ stores daemon runtim
 
 | Command | Current behavior |
 | --- | --- |
-| `/dj` or `/dj status` | Show daemon, sync, catalog, readiness, model, last-run, and playback monitor status. |
+| `/dj` or `/dj status` | Show daemon, sync, catalog, model, and last-run status. |
 | `/dj spotify-login` | Run Spotify PKCE login and save the local token cache. |
-| `/dj start` | Start or attach to the daemon, sync catalog data, wait for readiness when needed, generate a DJ block, and start playback. |
-| `/dj sync` | Start or join catalog sync without starting playback. |
+| `/dj start` | Start or attach to the daemon and start or join background catalog sync. |
+| `/dj sync` | Start or join background catalog sync. |
 | `/dj devices` | List visible Spotify Connect devices. |
 | `/dj device <number>` | Save a preferred Spotify Connect device. |
 | `/dj quit` | Ask the daemon to shut down. |
@@ -43,7 +42,7 @@ The parser currently accepts exactly `start`, `sync`, `status`, `quit`, `spotify
 
 ## Current Gaps
 
-The planned command surface still includes stop, skip, vibe steering, detach, and takeover semantics. Those belong in [Roadmap](../roadmap.md) until implemented so planned behavior does not blur into current behavior.
+Recommendation composition and automatic Spotify playback are also current gaps. The planned command surface still includes stop, skip, vibe steering, detach, and takeover semantics. Those belong in [Roadmap](../roadmap.md) until implemented so planned behavior does not blur into current behavior.
 
 ## Related Pages
 

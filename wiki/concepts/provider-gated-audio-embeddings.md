@@ -16,14 +16,14 @@ graph TD
     C --> D["Download permitted preview audio"]
     D --> E["Generate local MuQ embedding"]
     E --> F["Store vector in SQLite"]
-    F --> G["Similarity recommendation"]
+    F -. "available to future recommendation composition" .-> G["Similarity implementation"]
 ```
 
 ## Current Prototype
 
 The current prototype resolves missing previews through Deezer using ISRC values. It stores preview-match rows with provider `deezer`, uses a community-observed 50 requests per 5 seconds rate limit, and reports matched, no-preview, not-found, no-ISRC, rate-limited, and failed counts.[^3]
 
-Embedding generation uses a local MuQ preview embedder, decodes preview audio at 24 kHz, produces normalized embeddings, and stores vectors in the local SQLite catalog.[^4][^5]
+Embedding generation uses a local MuQ preview embedder, decodes preview audio at 24 kHz, produces normalized embeddings, and stores vectors in the local SQLite catalog. The daemon syncs these vectors but does not currently use them to select or play tracks.[^4][^5]
 
 ## Product Rule
 

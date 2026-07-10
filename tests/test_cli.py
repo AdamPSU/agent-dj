@@ -43,8 +43,8 @@ def test_status_reports_not_running_without_runtime(monkeypatch, tmp_path) -> No
     assert "Claude DJ daemon is not running" in stdout.getvalue()
 
 
-def test_session_start_timeout_allows_first_embedding_model_load() -> None:
-    assert cli.SESSION_START_TIMEOUT_SECONDS >= 600
+def test_session_start_does_not_define_a_recommendation_wait_timeout() -> None:
+    assert not hasattr(cli, "SESSION_START_TIMEOUT_SECONDS")
 
 
 def test_status_reports_running_daemon(monkeypatch, tmp_path) -> None:
@@ -74,10 +74,8 @@ def test_status_prints_catalog_sync_and_last_run_details(monkeypatch) -> None:
             "preview_match_count": 67,
             "preview_pending_count": 1771,
             "embedding_count": 65,
-            "ready_track_count": 65,
             "embedding_pending_count": 0,
             "needs_onboarding": True,
-            "ready_for_audio_similarity": True,
         },
         "indexing": {
             "spotify": {"ran": True, "playlist_count": 25, "track_count": 1838, "skipped_track_count": 3},
@@ -112,11 +110,6 @@ def test_status_prints_catalog_sync_and_last_run_details(monkeypatch) -> None:
         "  Embeddings: 65 ready, 0 pending\n"
         "  Model: OpenMuQ/MuQ-large-msd-iter, 1024 dimensions\n"
         "\n"
-        "Readiness:\n"
-        "  Ready tracks: 65\n"
-        "  Audio similarity: ready\n"
-        "  Onboarding: still loading songs\n"
-        "\n"
         "Last run:\n"
         "  Spotify: indexed 25 playlists, 1838 tracks, skipped 3\n"
         "  Previews: matched 65, failed 2\n"
@@ -124,14 +117,17 @@ def test_status_prints_catalog_sync_and_last_run_details(monkeypatch) -> None:
     )
 
 
-def test_status_prints_playback_monitor_details(monkeypatch) -> None:
+def test_status_prints_spotify_login_guidance_after_background_auth_failure(monkeypatch) -> None:
     response = {
         "host": "127.0.0.1",
         "port": 63964,
-        "playback": {
-            "status": "failed",
-            "known_track_count": 2,
-            "error": "Spotify denied playback control.",
+        "sync": {"status": "completed"},
+        "indexing": {
+            "spotify": {
+                "ran": False,
+                "error_code": "spotify_auth_required",
+                "message": "Spotify login is required before playlist indexing.",
+            }
         },
     }
 
@@ -143,42 +139,8 @@ def test_status_prints_playback_monitor_details(monkeypatch) -> None:
     exit_code = cli.run(["status"], stdout=stdout)
 
     assert exit_code == 0
-    assert stdout.getvalue() == (
-        "Claude DJ daemon is running on 127.0.0.1:63964.\n"
-        "\n"
-        "Playback:\n"
-        "  Monitor: failed\n"
-        "  Known queue tracks: 2\n"
-        "  Error: Spotify denied playback control.\n"
-    )
-
-
-def test_status_reports_still_loading_when_previews_are_pending(monkeypatch) -> None:
-    response = {
-        "host": "127.0.0.1",
-        "port": 63964,
-        "catalog": {
-            "source_count": 25,
-            "track_count": 1838,
-            "preview_match_count": 67,
-            "preview_pending_count": 1771,
-            "embedding_count": 65,
-            "ready_track_count": 65,
-            "embedding_pending_count": 0,
-            "needs_onboarding": False,
-            "ready_for_audio_similarity": True,
-        },
-    }
-
-    monkeypatch.setattr(cli, "load_runtime_info", lambda: object())
-    monkeypatch.setattr(cli, "is_daemon_running", lambda runtime_info: True)
-    monkeypatch.setattr(cli, "get_json", lambda runtime_info, path: response)
-    stdout = io.StringIO()
-
-    exit_code = cli.run(["status"], stdout=stdout)
-
-    assert exit_code == 0
-    assert "Onboarding: still loading songs" in stdout.getvalue()
+    assert "Spotify login is required before playlist indexing." in stdout.getvalue()
+    assert "Run: /dj spotify-login" in stdout.getvalue()
 
 
 def test_sync_posts_to_sync_start_and_prints_on_device_message(monkeypatch) -> None:
@@ -360,96 +322,7 @@ def test_start_prints_embedding_generation_summary(monkeypatch) -> None:
     assert stdout.getvalue() == "Claude DJ session attached.\nStoring your songs on device.\n"
 
 
-def test_start_prints_playback_success(monkeypatch) -> None:
-    response = {
-        "message": "Claude DJ session attached.",
-        "indexing": {"spotify": {"ran": False}},
-        "playback": {
-            "started": True,
-            "track_count": 3,
-            "first_track": {
-                "track_id": 1,
-                "title": "Track One",
-                "artist_name": "Artist One",
-                "spotify_uri": "spotify:track:1",
-            },
-        },
-    }
-
-    monkeypatch.setattr(cli, "load_runtime_info", lambda: object())
-    monkeypatch.setattr(cli, "is_daemon_running", lambda runtime_info: True)
-    monkeypatch.setattr(cli, "post_json", lambda runtime_info, path, body, **kwargs: response)
-    stdout = io.StringIO()
-
-    exit_code = cli.run(["start"], stdout=stdout)
-
-    assert exit_code == 0
-    assert stdout.getvalue() == (
-        "Claude DJ session attached.\n"
-        "Started Claude DJ block: Track One by Artist One + 2 more.\n"
-    )
-
-
-def test_start_prints_targeted_playback_device(monkeypatch) -> None:
-    response = {
-        "message": "Claude DJ session attached.",
-        "indexing": {"spotify": {"ran": False}},
-        "playback": {
-            "started": True,
-            "track_count": 1,
-            "first_track": {
-                "title": "Track One",
-                "artist_name": "Artist One",
-            },
-            "device": {
-                "name": "MacBook",
-                "type": "Computer",
-            },
-            "device_fallback": True,
-            "preferred_device_unavailable": False,
-        },
-    }
-
-    monkeypatch.setattr(cli, "load_runtime_info", lambda: object())
-    monkeypatch.setattr(cli, "is_daemon_running", lambda runtime_info: True)
-    monkeypatch.setattr(cli, "post_json", lambda runtime_info, path, body, **kwargs: response)
-    stdout = io.StringIO()
-
-    exit_code = cli.run(["start"], stdout=stdout)
-
-    assert exit_code == 0
-    assert stdout.getvalue() == (
-        "Claude DJ session attached.\n"
-        "Started Claude DJ block: Track One by Artist One on MacBook.\n"
-    )
-
-
-def test_start_prints_playback_failure(monkeypatch) -> None:
-    response = {
-        "message": "Claude DJ session attached.",
-        "indexing": {"spotify": {"ran": False}},
-        "playback": {
-            "started": False,
-            "error_code": "spotify_no_active_device",
-            "message": "No active Spotify device found. Open Spotify on a device, then run /dj start again.",
-        },
-    }
-
-    monkeypatch.setattr(cli, "load_runtime_info", lambda: object())
-    monkeypatch.setattr(cli, "is_daemon_running", lambda runtime_info: True)
-    monkeypatch.setattr(cli, "post_json", lambda runtime_info, path, body, **kwargs: response)
-    stdout = io.StringIO()
-
-    exit_code = cli.run(["start"], stdout=stdout)
-
-    assert exit_code == 0
-    assert stdout.getvalue() == (
-        "Claude DJ session attached.\n"
-        "No active Spotify device found. Open Spotify on a device, then run /dj start again.\n"
-    )
-
-
-def test_start_prints_spotify_auth_instruction(monkeypatch, tmp_path) -> None:
+def test_start_leaves_background_spotify_errors_to_status(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("CLAUDE_DJ_HOME", str(tmp_path))
     response = {
         "message": "Claude DJ session attached.",
@@ -476,40 +349,7 @@ def test_start_prints_spotify_auth_instruction(monkeypatch, tmp_path) -> None:
     exit_code = cli.run(["start"], stdout=stdout)
 
     assert exit_code == 0
-    assert "Spotify login is required before playlist indexing." in stdout.getvalue()
-    assert "Run: /dj spotify-login" in stdout.getvalue()
-
-
-def test_start_prints_spotify_access_denied(monkeypatch, tmp_path) -> None:
-    monkeypatch.setenv("CLAUDE_DJ_HOME", str(tmp_path))
-    response = {
-        "message": "Claude DJ session attached.",
-        "catalog": {
-            "source_count": 0,
-            "track_count": 0,
-            "embedding_count": 0,
-            "needs_spotify_index": True,
-        },
-        "indexing": {
-            "spotify": {
-                "ran": False,
-                "error_code": "spotify_access_denied",
-                "message": "Spotify denied playlist track access.",
-            }
-        },
-    }
-
-    monkeypatch.setattr(cli, "load_runtime_info", lambda: object())
-    monkeypatch.setattr(cli, "is_daemon_running", lambda runtime_info: True)
-    monkeypatch.setattr(cli, "post_json", lambda runtime_info, path, body, **kwargs: response)
-    stdout = io.StringIO()
-
-    exit_code = cli.run(["start"], stdout=stdout)
-
-    assert exit_code == 0
-    assert "Spotify denied playlist track access." in stdout.getvalue()
-    assert "Run: /dj spotify-login" not in stdout.getvalue()
-    assert "Indexing all Spotify playlists is needed" not in stdout.getvalue()
+    assert stdout.getvalue() == "Claude DJ session attached.\nStoring your songs on device.\n"
 
 
 def test_start_spawns_daemon_when_none_is_running(monkeypatch, tmp_path) -> None:
@@ -534,7 +374,7 @@ def test_start_spawns_daemon_when_none_is_running(monkeypatch, tmp_path) -> None
         stop_test_server(server, thread)
 
 
-def test_start_allows_long_running_session_start(monkeypatch) -> None:
+def test_start_uses_normal_daemon_request_timeout(monkeypatch) -> None:
     calls = []
     response = {
         "message": "Claude DJ session attached.",
@@ -554,7 +394,7 @@ def test_start_allows_long_running_session_start(monkeypatch) -> None:
     exit_code = cli.run(["start"], stdout=stdout)
 
     assert exit_code == 0
-    assert calls == [cli.SESSION_START_TIMEOUT_SECONDS]
+    assert calls == [2]
 
 
 def test_quit_stops_running_daemon(monkeypatch, tmp_path) -> None:

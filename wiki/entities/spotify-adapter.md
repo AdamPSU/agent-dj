@@ -1,11 +1,11 @@
 ---
 title: Spotify Adapter
 description: Current responsibilities and boundaries of the Spotify API adapter used by Claude DJ.
-date: 2026-07-08
+date: 2026-07-09
 tags: [spotify, adapter, oauth, playback]
 ---
 
-The Spotify adapter owns low-level Spotify Web API interactions. Higher-level behavior, such as device fallback and playback monitoring, belongs to daemon and device-policy code rather than the adapter itself.[^1][^2][^3]
+The Spotify adapter owns low-level Spotify Web API interactions. Catalog indexing and CLI login/device commands actively use part of this surface. No current production component composes the playback methods into automatic music control.[^1][^2][^3]
 
 ## Responsibilities
 
@@ -24,13 +24,13 @@ The Spotify adapter owns low-level Spotify Web API interactions. Higher-level be
 
 ```mermaid
 graph LR
-    A["Daemon"] --> B["Spotify adapter"]
-    C["Device policy"] --> B
+    A["CLI login and devices"] --> B["Spotify adapter"]
+    C["Future playback owner"] -.-> B
     D["Catalog indexing"] --> B
     B --> E["Spotify Web API"]
 ```
 
-The adapter exposes Spotify-specific operations. The daemon decides when to call them, and `devices.py` decides whether a saved preferred device is eligible for fallback playback.[^2][^3]
+The adapter exposes Spotify-specific operations. `devices.py` retains preferred-device policy, but no daemon playback path currently invokes either playback surface.[^3]
 
 ## Current Missing Playback Controls
 
@@ -44,5 +44,5 @@ The adapter exposes Spotify-specific operations. The daemon decides when to call
 These gaps should stay in [Roadmap](../roadmap.md) until there is code support.
 
 [^1]: spotify.py
-[^2]: daemon.py
+[^2]: cli.py
 [^3]: devices.py

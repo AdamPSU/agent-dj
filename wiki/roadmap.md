@@ -11,7 +11,7 @@ This page is the canonical future-work list for Claude DJ. New ideas should upda
 
 | Planned command | Purpose | Depends on |
 | --- | --- | --- |
-| `/dj stop` | Stop active automation without necessarily shutting down the daemon. | Session ownership and playback monitor lifecycle. |
+| `/dj stop` | Stop future active automation without necessarily shutting down the daemon. | Replacement playback owner and session lifecycle. |
 | `/dj skip` | Skip current track and record that the user wanted a change. | Spotify skip support and feedback storage. |
 | `/dj vibe` | Steer the current music direction. | Preference model and recommendation inputs. |
 | `/dj detach` | Disconnect this OpenCode session while leaving daemon alive. | Multi-session session model. |
@@ -23,7 +23,9 @@ These commands are not part of the current CLI parser and should not be document
 
 ```mermaid
 graph TD
-    A["Current MVP"] --> B["Stop and skip controls"]
+    A["Current catalog runtime"] --> B["Recommendation composition"]
+    B --> H["Playback sequencing"]
+    H --> I["Stop and skip controls"]
     A --> C["User feedback history"]
     A --> D["Playback repair under queue drift"]
     A --> E["Narration controls"]
@@ -36,7 +38,8 @@ Current important gaps:
 - Transfer playback and skip are not implemented in the Spotify adapter.
 - Session control is minimal and currently uses `local-cli` as the active session id.
 - Persistent decision history and feedback history are not implemented.
-- Recommendation steering is not wired into the embedding-similarity loop.
+- The preserved embedding-similarity implementation is not wired into daemon or CLI runtime behavior.
+- No replacement component currently owns recommendation policy or Spotify playback sequencing.
 - Provider-safe mainstream-catalog embeddings remain unresolved.
 
 ## Mood Detection

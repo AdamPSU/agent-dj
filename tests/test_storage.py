@@ -135,14 +135,16 @@ def test_catalog_status_reports_first_run_on_empty_database(tmp_path) -> None:
         initialize_schema(db)
 
         status = get_catalog_status(db)
+        payload = status.to_json()
 
         assert status.source_count == 0
         assert status.track_count == 0
         assert status.preview_match_count == 0
         assert status.embedding_count == 0
-        assert status.ready_track_count == 0
         assert status.needs_spotify_index is True
         assert status.needs_onboarding is True
+        assert "ready_track_count" not in payload
+        assert "ready_for_audio_similarity" not in payload
     finally:
         db.close()
 
@@ -178,7 +180,6 @@ def test_catalog_status_reports_phase_specific_readiness(tmp_path) -> None:
         assert status.needs_spotify_index is False
         assert status.needs_preview_resolution is True
         assert status.needs_embeddings is False
-        assert status.ready_for_audio_similarity is False
     finally:
         db.close()
 
@@ -406,7 +407,7 @@ def test_upsert_source_track_and_replace_memberships(tmp_path) -> None:
         db.close()
 
 
-def test_catalog_status_reports_playable_but_still_onboarding_without_preview_rows(tmp_path) -> None:
+def test_catalog_status_reports_embedded_but_still_onboarding_without_preview_rows(tmp_path) -> None:
     db = connect(tmp_path / "claude-dj.sqlite3")
 
     try:
@@ -443,53 +444,8 @@ def test_catalog_status_reports_playable_but_still_onboarding_without_preview_ro
         assert status.track_count == 1
         assert status.preview_match_count == 0
         assert status.embedding_count == 1
-        assert status.ready_track_count == 1
         assert status.needs_preview_resolution is True
         assert status.needs_onboarding is True
-    finally:
-        db.close()
-
-
-def test_catalog_status_counts_ready_tracks_with_embeddings(tmp_path) -> None:
-    db = connect(tmp_path / "claude-dj.sqlite3")
-
-    try:
-        initialize_schema(db)
-        for track_id in (1, 2, 3):
-            upsert_track(
-                db,
-                spotify_track_id=f"spotify-track-{track_id}",
-                spotify_uri=f"spotify:track:{track_id}",
-                isrc=f"US{track_id}",
-                title=f"Track {track_id}",
-                artist_name="Artist",
-                album_name=None,
-                duration_ms=None,
-                explicit=False,
-                popularity=None,
-            )
-        upsert_track_embedding(
-            db,
-            track_id=1,
-            embedding=[0.25] * EMBEDDING_DIMENSIONS,
-            model_name="OpenMuQ/MuQ-large-msd-iter",
-            model_version=None,
-            dimensions=EMBEDDING_DIMENSIONS,
-        )
-        upsert_track_embedding(
-            db,
-            track_id=3,
-            embedding=[0.75] * EMBEDDING_DIMENSIONS,
-            model_name="OpenMuQ/MuQ-large-msd-iter",
-            model_version=None,
-            dimensions=EMBEDDING_DIMENSIONS,
-        )
-        db.commit()
-
-        status = get_catalog_status(db)
-
-        assert status.ready_track_count == 2
-        assert status.to_json()["ready_track_count"] == 2
     finally:
         db.close()
 
