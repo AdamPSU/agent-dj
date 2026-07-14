@@ -1,48 +1,52 @@
 # Claude DJ
 
-Claude DJ is a local OpenCode companion for Spotify catalog experiments during coding sessions.
+Local OpenCode companion for Spotify during coding sessions.
 
-The current runtime intentionally does not generate recommendations or start Spotify playback. `/dj start` starts or attaches to the local daemon and begins catalog sync in the background while the recommendation system is rebuilt.
-
-## Install
-
-Claude DJ installs as a persistent local tool and adds a global OpenCode `/dj` command.
-
-Install either `uv` or `pipx` first. `uv` is preferred. The installer will not install package managers for you.
-
-```sh
-uvx --from git+https://github.com/AdamPSU/claude-dj-plugin.git claude-dj-install
-```
-
-If you use `pipx` instead:
-
-```sh
-pipx run --spec git+https://github.com/AdamPSU/claude-dj-plugin.git claude-dj-install
-```
-
-The bootstrap command runs the installer from Git. The installer then uses `uv tool install` when `uv` is available, otherwise `pipx install`. Both install Claude DJ from the Git URL in an isolated persistent tool environment.
-
-Create a Spotify developer app with redirect URI `http://127.0.0.1:8888/callback`, then export its client ID where OpenCode can read it:
-
-```sh
-export SPOTIFY_CLIENT_ID=<your-client-id>
-```
-
-The repository retains isolated Spotify playback, similarity, narration, ElevenLabs, and local-audio components. They are not currently composed by the daemon or CLI.
-
-After installing, restart OpenCode so the global command is loaded, then authenticate Spotify:
+## Control plane
 
 ```text
-/dj spotify-login
-/dj start
-/dj status
+/dj …  →  claude-dj CLI  →  localhost HTTP  →  daemon (FastAPI)
 ```
 
-## Development
+## Spotify setup
 
-This project uses `uv` for Python environment and dependency management.
+1. Create an app in the [Spotify Developer Dashboard](https://developer.spotify.com/dashboard).
+2. Allow loopback redirects (`http://127.0.0.1/callback` style). Login uses an ephemeral local port.
+3. Export the client ID:
+   ```sh
+   export SPOTIFY_CLIENT_ID=<your-client-id>
+   ```
+4. Log in:
+   ```sh
+   uv run claude-dj spotify-login
+   ```
+   Tokens: `~/.claude-dj/spotify_tokens.json` (mode `600`).
+
+`claude-dj start` runs login automatically if that token file is missing.
+
+## Commands
+
+```sh
+uv run claude-dj spotify-login
+uv run claude-dj start
+uv run claude-dj status
+uv run claude-dj sync      # stub
+uv run claude-dj quit
+```
+
+## Local embeddings (MuQ-MuLan)
+
+Track fingerprints use **MuQ-MuLan** (512-d), loaded once in the daemon process.
+
+- **Disk:** ~2.7 GB model download on first use (Hugging Face)
+- **RAM:** plan on ~4–8 GB free for comfortable single-stream inference (estimate)
+- **Device:** CUDA → MPS → CPU automatically
+- **Input:** Deezer preview URL or raw audio bytes streamed in memory (24 kHz mono)
+
+## Development
 
 ```sh
 uv sync
 uv run pytest
 ```
+
