@@ -22,7 +22,7 @@ class PlayerState:
 
 class PlaybackPort(Protocol):
     def start_block(self, tracks: list[dict[str, Any]]) -> None:
-        """Load a planned block and start the first track."""
+        """Load a planned block (all URIs) and start the first track."""
 
     def play_uri(self, spotify_id: str, *, device_id: str | None = None) -> None:
         """Start a single track on the active (or given) device."""
@@ -32,10 +32,11 @@ class PlaybackPort(Protocol):
 
 
 class FakePlayback:
-    """In-memory player for tests: virtual queue + controllable now-playing."""
+    """In-memory player for tests: multi-URI block + controllable now-playing."""
 
     def __init__(self) -> None:
         self.last_block: list[dict[str, Any]] | None = None
+        self.last_uris: list[str] = []
         self.start_count = 0
         self.play_uri_calls: list[str] = []
         self._state: PlayerState | None = None
@@ -44,13 +45,23 @@ class FakePlayback:
     def start_block(self, tracks: list[dict[str, Any]]) -> None:
         self.last_block = list(tracks)
         self.queue = list(tracks)
+        self.last_uris = [str(t["spotify_id"]) for t in tracks]
         self.start_count += 1
         if tracks:
             sid = str(tracks[0]["spotify_id"])
-            self.play_uri(sid)
+            self.play_uri_calls.append(sid)
+            self._state = PlayerState(
+                is_playing=True,
+                progress_ms=0,
+                duration_ms=180_000,
+                track_id=sid,
+                device_id="fake-device",
+                context_uri=None,
+            )
 
     def play_uri(self, spotify_id: str, *, device_id: str | None = None) -> None:
         self.play_uri_calls.append(spotify_id)
+        self.last_uris = [spotify_id]
         self._state = PlayerState(
             is_playing=True,
             progress_ms=0,
@@ -91,26 +102,33 @@ class SpotifyPlayback:
 
     def __init__(self) -> None:
         self.last_block: list[dict[str, Any]] | None = None
+        self.last_uris: list[str] = []
         self.start_count = 0
 
     def start_block(self, tracks: list[dict[str, Any]]) -> None:
+        """Load the full block so Connect skip advances within the plan."""
         from backend.adapters import spotify
 
         self.last_block = list(tracks)
         self.start_count += 1
         if not tracks:
+            self.last_uris = []
             return
         try:
             spotify.set_shuffle(False)
             spotify.set_repeat("off")
         except Exception:
             pass
-        self.play_uri(str(tracks[0]["spotify_id"]))
+        uris = [f"spotify:track:{t['spotify_id']}" for t in tracks]
+        self.last_uris = [str(t["spotify_id"]) for t in tracks]
+        target = spotify.load_preferred_device_id()
+        spotify.start_playback_uris(uris, device_id=target)
 
     def play_uri(self, spotify_id: str, *, device_id: str | None = None) -> None:
         from backend.adapters import spotify
 
         uri = f"spotify:track:{spotify_id}"
+        self.last_uris = [spotify_id]
         target = device_id or spotify.load_preferred_device_id()
         spotify.start_playback_uris([uri], device_id=target)
 

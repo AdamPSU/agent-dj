@@ -38,8 +38,8 @@ Industry party/DJ apps solve this with a **virtual queue owned by the app**, tre
 | Decision | Choice |
 |----------|--------|
 | Source of truth | **Virtual queue in daemon** (not Spotify queue) |
-| Spotify write for DJ tracks | **`PUT /me/player/play` with `uris: [one track]`** |
-| Native `addToQueue` | **Not used in v1** (optional later for soft pre-buffer) |
+| Spotify write for DJ tracks | **`PUT /me/player/play` with `uris: [whole current block]`** (multi-URI) so Connect skip works |
+| Native `addToQueue` | **Not used** — multi-URI play replaces the active context with our plan |
 | Observation | Poll `GET /me/player` |
 | Poll cadence | **5s** default; **2s** when `time_remaining < 30s` |
 | Skip heuristic | Track id changed and previous progress ratio **&lt; 0.9** and remaining **≥ 30s** → `SKIPPED` |
@@ -75,7 +75,7 @@ Industry party/DJ apps solve this with a **virtual queue owned by the app**, tre
 |-------|----------------|
 | `recommend` | Pure block selection (unchanged) |
 | `orchestrator` | Session, cooldown, mint blocks, call port, handle tick events |
-| `playback` / port | Spotify HTTP: play one URI, read state; Fake for tests |
+| `playback` / port | Spotify HTTP: multi-URI start_block, read state; Fake for tests |
 | `monitor` | Background loop while **ATTACHED**; emits events |
 
 Daemon owns one orchestrator + one port + optional monitor thread (same process as catalog sync).
@@ -111,12 +111,14 @@ VirtualQueue:
 
 On `start_block(tracks)`:
 
-1. Replace or append? **v1: replace queue with block tracks** when starting a new block from idle; when auto-minting next block while ATTACHED, **append**.
-2. Set `index = 0`, `expected_id = tracks[0].spotify_id`.
-3. `play(uri of tracks[0])`.
-4. Apply cooldown for tracks[0] (or whole block — **v1: cooldown each track when it becomes current**, not entire block upfront, so unplayed tail isn’t cooled if user yields).
+1. Replace or append virtual queue? **v1: replace** when starting from idle/cold; when auto-minting next block while ATTACHED, **append** to virtual queue then **multi-URI load only the new block**.
+2. Set `index` to the new head, `expected_id = head.spotify_id`.
+3. `PUT /me/player/play` with **all URIs in the new block** (not one track, not add-to-queue).
+4. Apply cooldown for the current head only when it becomes current.
 
-**Refinement:** cooldown when track **starts** as current (matches “committed to ear”).
+**Why multi-URI:** single-URI play leaves no next track for Spotify’s skip button. Loading the full block keeps virtual queue as SoT while giving Connect a real next list for *this* plan only.
+
+**Near end of last track in plan:** mint next block early and multi-URI start it. Mid-block near-end does **not** re-issue play — Spotify advances the multi-URI list; monitor only reconciles.
 
 ## PlaybackPort (v1)
 

@@ -11,13 +11,14 @@ tags:
 - monitor
 ---
 
-Playback treats Spotify as a **dumb speaker**. The app owns a **virtual queue** of planned tracks; Spotify only receives single-track play commands and is polled for state.
+Playback treats Spotify as a **dumb speaker**. The app owns a **virtual queue** of planned tracks; Spotify is loaded with the **current block as multi-URI play** (so skip works) and is polled for state.
 
 ## Why
 
-- No reliable clear/remove on Spotify’s native queue
+- No reliable clear/remove on Spotify’s native “Up Next” queue → we **replace** play context with our block URIs, not append via `addToQueue`
 - No playback webhooks → must poll `GET /me/player`
-- Users can skip or play foreign tracks anytime
+- Single-URI play breaks client skip (no next) → **multi-URI block load**
+- Users can still play foreign tracks → yield
 
 ## Modes
 
@@ -33,21 +34,21 @@ Playback treats Spotify as a **dumb speaker**. The app owns a **virtual queue** 
 flowchart TD
   Play["/play"] --> Mint["recommend_block"]
   Mint --> VQ["virtual_queue"]
-  VQ --> One["play first URI"]
-  One --> Mon["monitor poll 3-5s"]
+  VQ --> Multi["play all block URIs"]
+  Multi --> Mon["monitor poll 3-5s"]
   Mon --> Same{"same expected id?"}
-  Same -->|yes near end| Next["play next planned"]
+  Same -->|yes mid-block| Ok["ok — Spotify has next"]
+  Same -->|yes last track near end| Mint2["mint next block multi-URI"]
   Same -->|planned other| Recon["move cursor"]
   Same -->|foreign| Yield["mode yielded"]
-  Next --> Empty{"queue empty?"}
-  Empty -->|yes| Mint2["mint next block"]
 ```
 
 ## Skip behavior
 
-- Skip **within** block → reconcile cursor, stay attached  
+- Skip **within** block → Spotify advances multi-URI list; monitor reconciles cursor, stay attached  
 - Skip/land **outside** plan → yield  
-- Natural end (~last 5s) → play next planned URI  
+- Near end of **last** planned track → mint next block and multi-URI load it  
+
 
 ## Device targeting
 

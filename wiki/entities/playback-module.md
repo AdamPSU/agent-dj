@@ -19,7 +19,8 @@ tags:
 
 ## Spotify writes
 
-- `PUT /me/player/play` with one `spotify:track:…`
+- `start_block`: `PUT /me/player/play` with **all** block `spotify:track:…` URIs (skip-friendly)
+- `play_uri`: single URI (escape hatch; force-advance reloads remaining via `start_block`)
 - Best-effort shuffle off / repeat off on block start
 
 ## Related

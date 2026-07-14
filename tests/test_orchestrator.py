@@ -30,9 +30,13 @@ def _fill_catalog(conn, n: int = 50) -> list[int]:
 
 def test_fake_playback_records_block() -> None:
     port = FakePlayback()
-    tracks = [{"spotify_id": "a", "name": "A", "track_id": 1}]
+    tracks = [
+        {"spotify_id": "a", "name": "A", "track_id": 1},
+        {"spotify_id": "b", "name": "B", "track_id": 2},
+    ]
     port.start_block(tracks)
     assert port.last_block == tracks
+    assert port.last_uris == ["a", "b"]
     assert port.get_state() is not None
     assert port.get_state().track_id == "a"
 
@@ -62,6 +66,8 @@ def test_play_starts_block_and_cools_down(tmp_path) -> None:
     assert result["mode"] == orchestrator.MODE_ATTACHED
     assert len(result["block"]["tracks"]) == recommend.DEFAULT_N
     assert fake.start_count == 1
+    assert len(fake.last_uris) == recommend.DEFAULT_N
+    assert fake.last_uris == [t["spotify_id"] for t in result["block"]["tracks"]]
     assert session.expected_id == result["block"]["tracks"][0]["spotify_id"]
     # only current track cooled at start
     first_id = result["block"]["tracks"][0]["track_id"]
@@ -115,13 +121,36 @@ def test_advance_plays_next(tmp_path) -> None:
     session = orchestrator.Orchestrator(playback=fake, rng=random.Random(5))
     first = session.play(conn)
     assert first["ok"]
-    t0 = first["block"]["tracks"][0]["spotify_id"]
-    t1 = first["block"]["tracks"][1]["spotify_id"]
+    tracks = first["block"]["tracks"]
+    t0 = tracks[0]["spotify_id"]
+    t1 = tracks[1]["spotify_id"]
     advanced = session.advance(conn)
     assert advanced["ok"] is True
     assert session.expected_id == t1
-    assert fake.play_uri_calls[-1] == t1
+    # Force-advance reloads remaining multi-URI plan (not a single-URI play).
+    assert fake.start_count == 2
+    assert fake.last_uris == [t["spotify_id"] for t in tracks[1:]]
+    assert fake.last_uris[0] == t1
     assert t0 != t1
+
+
+def test_tick_does_not_force_play_when_block_has_next(tmp_path) -> None:
+    """Near end of a mid-block track: rely on multi-URI advance, don't re-command."""
+    conn = db.connect(tmp_path / "c.db")
+    _fill_catalog(conn, n=50)
+    fake = FakePlayback()
+    session = orchestrator.Orchestrator(playback=fake, rng=random.Random(8))
+    result = session.play(conn)
+    assert result["ok"]
+    starts = fake.start_count
+    fake.set_state(
+        track_id=result["block"]["tracks"][0]["spotify_id"],
+        progress_ms=176_000,
+        duration_ms=180_000,
+    )
+    out = session.tick(conn)
+    assert out["event"] == "ok"
+    assert fake.start_count == starts
 
 
 def test_advance_without_play_fails(tmp_path) -> None:

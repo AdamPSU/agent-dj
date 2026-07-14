@@ -142,12 +142,17 @@ class Orchestrator:
             if track_id == self.expected_id:
                 self._prev_progress_ms = state.progress_ms
                 remaining = state.time_remaining_ms
-                if remaining is not None and remaining < 5_000 and self._has_next():
-                    # End of track window: start next planned track.
+                # Multi-URI block load: Spotify advances within the block.
+                # Only mint early when the planned queue has no next track.
+                if (
+                    remaining is not None
+                    and remaining < 5_000
+                    and not self._has_next()
+                ):
                     return self._finish_current_and_continue(conn, skipped=False)
                 return {"ok": True, "event": "ok", "mode": self.mode}
 
-            # Track changed
+            # Track changed (user skip or natural advance inside multi-URI block)
             planned_ids = {
                 str(t["spotify_id"]) for t in self.virtual_queue[self.queue_index :]
             }
@@ -205,10 +210,12 @@ class Orchestrator:
 
     def _play_next_or_mint(self, conn) -> dict[str, Any]:
         if self._has_next():
+            # Force-advance: re-load remaining plan as multi-URI so skip still works.
             self.queue_index += 1
-            track = self.virtual_queue[self.queue_index]
+            remaining = self.virtual_queue[self.queue_index :]
+            track = remaining[0]
             sid = str(track["spotify_id"])
-            self.playback.play_uri(sid)
+            self.playback.start_block(remaining)
             self.expected_id = sid
             self._cooldown_current()
             self.playing = True
@@ -279,12 +286,12 @@ class Orchestrator:
         if replace_queue or not self.virtual_queue:
             self.virtual_queue = list(tracks)
             self.queue_index = 0
-            self.playback.start_block(tracks)
         else:
             self.virtual_queue.extend(tracks)
             self.queue_index = len(self.virtual_queue) - len(tracks)
-            head = self.virtual_queue[self.queue_index]
-            self.playback.play_uri(str(head["spotify_id"]))
+
+        # Always multi-URI load the new block so Connect skip works within it.
+        self.playback.start_block(tracks)
 
         head = self.virtual_queue[self.queue_index]
         self.expected_id = str(head["spotify_id"])
