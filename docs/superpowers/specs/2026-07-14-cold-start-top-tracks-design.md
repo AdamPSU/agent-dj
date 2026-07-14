@@ -56,20 +56,24 @@ If the eligible pool is empty **or** the top-tracks fetch fails → **silent fal
 ### B. Next-block seed (updated)
 
 ```text
-next = L2(0.3·last + 0.5·session_start + 0.2·recency)
+next = L2(0.5·last + 0.3·session_start + 0.2·recency)
 ```
+
+These are **embedding vectors**, not “% of the block.” The blend is the **seed point** for the next block’s first k-NN walk — how much the starting vibe pulls toward:
 
 | Component | Weight | Meaning |
 |-----------|--------|---------|
-| `last` | 0.3 | Embedding of last track of previous block (local continuity) |
-| `session_start` | 0.5 | Session identity (opening vibe) |
-| `recency` | 0.2 | Fresh sample from **short_term** tops only |
+| `last` | 0.5 | Embedding of the **last track** of the previous block (local continuity — “keep going from here”) |
+| `session_start` | 0.3 | Embedding of the **session opening seed** (not “the whole first block” — the cold-start / first working vector that anchored the session) |
+| `recency` | 0.2 | Fresh sample from **short_term** tops only (“songs like me lately”) |
+
+So your reading is directionally right if rephrased: **next seed ≈ 50% where we just were, 30% where the session opened, 20% recent taste** — not 50% “first block contents.”
 
 **Recency sampling (every next-block mint):**
 
 1. `GET /me/top/tracks?time_range=short_term&limit=50`  
 2. Same rank → distance → `softmax_sample` → embedding as cold helper  
-3. If pool empty / fetch fails → blend **without** recency: fall back to `L2(0.3·last + 0.5·session_start)` renormalized as two-term, **or** equivalently use `last` as recency placeholder so weights still sum — **v1 choice: omit recency and L2-normalize `0.3·last + 0.5·session_start` only** (weights need not re-sum to 1 before L2; L2 absorbs scale).
+3. If pool empty / fetch fails → blend **without** recency: **v1 choice: omit recency and L2-normalize `0.5·last + 0.3·session_start` only** (weights need not re-sum to 1 before L2; L2 absorbs scale).
 
 `next_block_seed` signature becomes:
 
@@ -81,7 +85,7 @@ def next_block_seed(
 ) -> list[float]:
 ```
 
-- If `recency_embed` is `None` → two-term blend `0.3·last + 0.5·session_start`, L2-normalize  
+- If `recency_embed` is `None` → two-term blend `0.5·last + 0.3·session_start`, L2-normalize  
 - If present → three-term blend, L2-normalize  
 - Degenerate norm → prefer `last` (same spirit as today)
 
@@ -186,7 +190,7 @@ No user-facing hard error for top-track failures in v1.
 
 1. Cold `/play` with indexed top overlap uses softmax-sampled top embedding as seed (not pure catalog random) when fetch works.  
 2. Cold time_range varies uniformly across the three API values.  
-3. Next-block seed is `L2(0.3 last + 0.5 session_start + 0.2 recency)` when short_term sample succeeds.  
+3. Next-block seed is `L2(0.5 last + 0.3 session_start + 0.2 recency)` when short_term sample succeeds.  
 4. Recency always uses `short_term`, never medium/long.  
 5. Offline / no-top-data still plays (random cold; 2-term next).  
 6. In-block neighbor algorithm unchanged.  
