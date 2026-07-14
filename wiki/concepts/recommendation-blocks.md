@@ -20,10 +20,10 @@ The recommender builds **blocks of 3–5 tracks** for flow/vibe continuity over 
 | Goal | Flow / vibe continuity |
 | Unit | Block `n ∈ {3,4,5}`, default 5 |
 | Pool | All `status=indexed` tracks |
-| Cold seed | Uniform random indexed embedding |
+| Cold seed | Rank-softmax over Spotify top tracks (uniform short/medium/long); fallback random indexed |
 | In-block pick | Softmax over −distance / τ (τ=0.15) |
 | Cooldown | 3 hours wall-clock (caller-owned map) |
-| Next-block seed | L2-normalize(0.5×last + 0.5×session_start) |
+| Next-block seed | L2(0.7×last + 0.3×recency); recency = short_term tops sample; else last only |
 | Min catalog | Fail `not_ready` if indexed &lt; 50 |
 | Partial blocks | No — full `n` or error |
 

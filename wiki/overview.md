@@ -36,7 +36,7 @@ Current `backend/` on `algorithm-v1` (2026-07-14). Ground truth: code + tests + 
 ## Key findings
 
 1. End-to-end music path is wired: catalog → recommend → virtual queue → Connect multi-URI block + poll monitor.[^1]
-2. Recommend needs **≥50 indexed** tracks; cold seed is random; next block blends 0.5 last + 0.5 session start.[^2]
+2. Recommend needs **≥50 indexed** tracks; cold seed from Spotify tops (rank-softmax); next block L2(0.7 last + 0.3 short_term recency).[^2]
 3. Spotify native queue is **not** the source of truth; app owns the plan; foreign tracks → **yield**.[^3]
 4. Package layout: control in top-level modules; music logic under `backend/music/`.[^4]
 5. Paths: tokens + preferred device + DB under `~/.claude-dj/`.[^5]

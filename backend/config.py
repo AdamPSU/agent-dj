@@ -17,6 +17,7 @@ SPOTIFY_SCOPES = " ".join(
         "user-read-recently-played",
         "user-read-playback-state",
         "user-modify-playback-state",
+        "user-top-read",
     ]
 )
 SPOTIFY_AUTHORIZE_URL = "https://accounts.spotify.com/authorize"

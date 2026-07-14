@@ -189,3 +189,76 @@ def test_status_snapshot_fields(tmp_path) -> None:
     assert snap2["mode"] == orchestrator.MODE_ATTACHED
     assert snap2["virtual_queue"]
     assert snap2["now_playing"] is not None
+
+
+def test_cold_play_uses_top_tracks_fetcher(tmp_path) -> None:
+    conn = db.connect(tmp_path / "c.db")
+    ids = _fill_catalog(conn, n=50)
+    calls: list[str] = []
+
+    def fake_tops(time_range: str):
+        calls.append(time_range)
+        return [{"spotify_id": "sp:0"}]
+
+    session = orchestrator.Orchestrator(
+        playback=FakePlayback(),
+        rng=random.Random(0),
+        top_tracks_fetcher=fake_tops,
+    )
+    result = session.play(conn)
+    assert result["ok"] is True
+    assert len(calls) == 1
+    assert calls[0] in recommend.TOP_TIME_RANGES
+    # cold seed embedding is sp:0's vector (session_start captures working seed)
+    seed = db.get_embedding(conn, ids[0])
+    assert seed is not None
+    assert all(
+        abs(a - b) < 1e-5
+        for a, b in zip(session.session_start_embed, seed, strict=True)
+    )
+
+
+def test_cold_play_fetcher_error_falls_back(tmp_path) -> None:
+    conn = db.connect(tmp_path / "c.db")
+    _fill_catalog(conn, n=50)
+
+    def boom(_time_range: str):
+        raise RuntimeError("spotify down")
+
+    session = orchestrator.Orchestrator(
+        playback=FakePlayback(),
+        rng=random.Random(1),
+        top_tracks_fetcher=boom,
+    )
+    result = session.play(conn)
+    assert result["ok"] is True
+
+
+def test_next_block_requests_short_term_recency(tmp_path) -> None:
+    conn = db.connect(tmp_path / "c.db")
+    _fill_catalog(conn, n=50)
+    calls: list[str] = []
+
+    def fake_tops(time_range: str):
+        calls.append(time_range)
+        return [{"spotify_id": "sp:1"}]
+
+    fake = FakePlayback()
+    session = orchestrator.Orchestrator(
+        playback=fake,
+        rng=random.Random(2),
+        n=3,
+        top_tracks_fetcher=fake_tops,
+    )
+    first = session.play(conn)
+    assert first["ok"]
+    cold_calls = list(calls)
+    # Drain queue without minting by advancing until last track, then advance again.
+    while session._has_next():
+        session.advance(conn)
+    before = len(calls)
+    out = session.advance(conn)
+    assert out["ok"] is True
+    assert len(calls) > before
+    assert calls[-1] == "short_term"
+    assert cold_calls  # cold also fetched once

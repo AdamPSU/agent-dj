@@ -129,6 +129,36 @@ def test_ensure_session_relogs_when_invalid(tmp_path: Path, monkeypatch) -> None
     assert path.exists()
 
 
+def test_iter_top_tracks_params_and_rows(monkeypatch) -> None:
+    seen: dict = {}
+
+    def fake_api_get(path: str, params: dict | None = None) -> dict:
+        seen["path"] = path
+        seen["params"] = params
+        return {
+            "items": [
+                {
+                    "id": "t1",
+                    "name": "Song",
+                    "artists": [{"name": "Artist"}],
+                },
+                {"id": None, "name": "bad"},
+            ]
+        }
+
+    monkeypatch.setattr(spotify, "api_get", fake_api_get)
+    rows = list(spotify.iter_top_tracks("medium_term", limit=50))
+    assert seen["path"] == "/me/top/tracks"
+    assert seen["params"] == {"time_range": "medium_term", "limit": 50}
+    assert rows == [{"spotify_id": "t1", "name": "Song", "artists": "Artist"}]
+
+
+def test_scopes_include_user_top_read() -> None:
+    from backend.config import SPOTIFY_SCOPES
+
+    assert "user-top-read" in SPOTIFY_SCOPES.split()
+
+
 def test_get_access_token_requires_client_id_when_expired(
     tmp_path: Path, monkeypatch
 ) -> None:

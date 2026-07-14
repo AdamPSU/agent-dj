@@ -11,20 +11,83 @@ VALID_N = frozenset({3, 4, 5})
 DEFAULT_N = 5
 DEFAULT_TAU = 0.15
 COOLDOWN_SECONDS = 3 * 3600
+LAST_WEIGHT = 0.7
+RECENCY_WEIGHT = 0.3
+TOP_TIME_RANGES = ("short_term", "medium_term", "long_term")
+TOP_LIMIT = 50
 
 
 def next_block_seed(
     last_embed: Sequence[float],
-    session_start_embed: Sequence[float],
+    recency_embed: Sequence[float] | None = None,
 ) -> list[float]:
-    """Blend last track and session start (0.5/0.5), then L2-normalize."""
-    if len(last_embed) != len(session_start_embed):
+    """Blend last track and optional recency (0.7/0.3), then L2-normalize.
+
+    If recency is missing, return last as-is. No session_start term.
+    """
+    if recency_embed is None:
+        return list(last_embed)
+    if len(last_embed) != len(recency_embed):
         raise ValueError("embedding length mismatch")
-    blended = [0.5 * a + 0.5 * b for a, b in zip(last_embed, session_start_embed, strict=True)]
+    blended = [
+        LAST_WEIGHT * a + RECENCY_WEIGHT * b
+        for a, b in zip(last_embed, recency_embed, strict=True)
+    ]
     norm = math.sqrt(sum(x * x for x in blended))
     if norm < 1e-12:
         return list(last_embed)
     return [x / norm for x in blended]
+
+
+def sample_seed_from_top(
+    conn,
+    top_rows: Sequence[Mapping[str, Any]],
+    *,
+    tau: float = DEFAULT_TAU,
+    rng: random.Random | None = None,
+) -> list[float] | None:
+    """Rank-softmax sample an embedding from ordered top tracks that are indexed.
+
+    `top_rows` is API order (rank 0 first). Returns None if no indexed intersection.
+    """
+    if rng is None:
+        rng = random.Random()
+    eligible: list[dict[str, Any]] = []
+    for row in top_rows:
+        spotify_id = row.get("spotify_id")
+        if not spotify_id:
+            continue
+        track = db.get_track_by_spotify_id(conn, str(spotify_id))
+        if track is None:
+            continue
+        if str(track.get("status") or "") != "indexed":
+            continue
+        track_id = int(track["id"])
+        emb = db.get_embedding(conn, track_id)
+        if emb is None:
+            continue
+        eligible.append(
+            {
+                "track_id": track_id,
+                "spotify_id": str(spotify_id),
+                "embedding": emb,
+            }
+        )
+    if not eligible:
+        return None
+    k = len(eligible)
+    denom = max(k - 1, 1)
+    candidates = [
+        {
+            "track_id": item["track_id"],
+            "spotify_id": item["spotify_id"],
+            "distance": float(r) / denom,
+            "embedding": item["embedding"],
+        }
+        for r, item in enumerate(eligible)
+    ]
+    pick = softmax_sample(candidates, tau=tau, rng=rng)
+    return list(pick["embedding"])
 
 
 def apply_cooldown(

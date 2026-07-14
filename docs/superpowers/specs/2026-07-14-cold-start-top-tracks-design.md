@@ -2,7 +2,7 @@
 
 **Date:** 2026-07-14  
 **Branch:** `algorithm-v1`  
-**Status:** approved for implementation planning  
+**Status:** implemented on `algorithm-v1`
 
 ## Problem
 
@@ -19,7 +19,7 @@ Playlist membership alone is a weak proxy for taste.
 ## Non-goals
 
 - Stronger cooldown / anti-repeat from full listening history  
-- Mid-session taste bias beyond the 0.2 recency term  
+- Mid-session taste bias beyond the 0.3 recency term  
 - `recently-played` (only ~50 plays; different signal)  
 - Top artists / genres / Spotify Recommendations API  
 - Changing in-block neighbor softmax  

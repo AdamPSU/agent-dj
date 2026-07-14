@@ -27,11 +27,13 @@ class Orchestrator:
         rng: random.Random | None = None,
         now: float | None = None,
         n: int = recommend.DEFAULT_N,
+        top_tracks_fetcher=None,
     ) -> None:
         self.playback = playback
         self.rng = rng if rng is not None else random.Random()
         self.now = now
         self.n = n
+        self.top_tracks_fetcher = top_tracks_fetcher
         self.mode = MODE_IDLE
         self.playing = False
         self.current_block: dict[str, Any] | None = None
@@ -93,19 +95,45 @@ class Orchestrator:
                 }
 
             seed_embed = None
-            session_start = None
-            if self.mode == MODE_YIELDED and self.session_start_embed and self.last_embed:
-                seed_embed = recommend.next_block_seed(
-                    self.last_embed, self.session_start_embed
-                )
-                session_start = self.session_start_embed
+            if self.mode == MODE_YIELDED and self.last_embed is not None:
+                recency = self._sample_recency_seed(conn)
+                seed_embed = recommend.next_block_seed(self.last_embed, recency)
+            elif self.mode == MODE_IDLE:
+                seed_embed = self._sample_cold_seed(conn)
 
             return self._mint_and_start(
                 conn,
                 seed_embed=seed_embed,
-                session_start_embed=session_start,
+                session_start_embed=None,
                 replace_queue=True,
             )
+
+    def _fetch_top_rows(self, time_range: str) -> list[dict[str, Any]]:
+        fetcher = self.top_tracks_fetcher
+        if fetcher is None:
+            from backend.adapters import spotify
+
+            fetcher = lambda tr: list(
+                spotify.iter_top_tracks(tr, limit=recommend.TOP_LIMIT)
+            )
+        return list(fetcher(time_range))
+
+    def _sample_cold_seed(self, conn) -> list[float] | None:
+        """Uniform time_range + rank-softmax tops; None → recommend random seed."""
+        try:
+            time_range = self.rng.choice(list(recommend.TOP_TIME_RANGES))
+            rows = self._fetch_top_rows(time_range)
+            return recommend.sample_seed_from_top(conn, rows, rng=self.rng)
+        except Exception:
+            return None
+
+    def _sample_recency_seed(self, conn) -> list[float] | None:
+        """Always short_term tops for next-block recency leg."""
+        try:
+            rows = self._fetch_top_rows("short_term")
+            return recommend.sample_seed_from_top(conn, rows, rng=self.rng)
+        except Exception:
+            return None
 
     def advance(self, conn) -> dict[str, Any]:
         """Play next planned track, or mint a new block if the queue is empty."""
@@ -229,13 +257,14 @@ class Orchestrator:
             }
 
         # Need a new block
-        if self.session_start_embed is None or self.last_embed is None:
+        if self.last_embed is None:
             return {
                 "ok": False,
                 "error": "not_playing",
                 "detail": "session embeddings missing for next block",
             }
-        seed = recommend.next_block_seed(self.last_embed, self.session_start_embed)
+        recency = self._sample_recency_seed(conn)
+        seed = recommend.next_block_seed(self.last_embed, recency)
         return self._mint_and_start(
             conn,
             seed_embed=seed,

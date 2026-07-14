@@ -224,6 +224,15 @@ def get_track(conn: sqlite3.Connection, track_id: int) -> dict | None:
     return dict(row) if row else None
 
 
+def get_track_by_spotify_id(conn: sqlite3.Connection, spotify_id: str) -> dict | None:
+    """Fetch one track by Spotify id."""
+    row = conn.execute(
+        "SELECT * FROM tracks WHERE spotify_id = ?",
+        (spotify_id,),
+    ).fetchone()
+    return dict(row) if row else None
+
+
 def get_embedding(conn: sqlite3.Connection, track_id: int) -> list[float] | None:
     """Return the stored embedding for a track, or None if missing."""
     row = conn.execute(

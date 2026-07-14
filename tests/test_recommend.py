@@ -33,18 +33,63 @@ def _fill_catalog(conn, n: int = 50, seed_base: float = 0.0) -> list[int]:
 
 
 def test_next_block_seed_blend_and_normalize() -> None:
-    a = [1.0] + [0.0] * (EMBED_DIM - 1)
-    b = [0.0, 1.0] + [0.0] * (EMBED_DIM - 2)
-    out = recommend.next_block_seed(a, b)
+    last = [1.0] + [0.0] * (EMBED_DIM - 1)
+    recency = [0.0, 1.0] + [0.0] * (EMBED_DIM - 2)
+    out = recommend.next_block_seed(last, recency)
     assert abs(math.sqrt(sum(x * x for x in out)) - 1.0) < 1e-6
-    assert abs(out[0] - out[1]) < 1e-6
-    assert out[0] > 0
+    # 0.7 last + 0.3 recency → first axis larger than second before/after L2
+    assert out[0] > out[1] > 0
+
+
+def test_next_block_seed_without_recency_is_last() -> None:
+    last = _unit(1.0)
+    out = recommend.next_block_seed(last, None)
+    assert out == list(last)
 
 
 def test_next_block_seed_degenerate_fallback() -> None:
     z = [0.0] * EMBED_DIM
     last = _unit(1.0)
-    assert recommend.next_block_seed(last, z) == last
+    out = recommend.next_block_seed(last, z)
+    assert all(abs(a - b) < 1e-6 for a, b in zip(out, last, strict=True))
+
+
+def test_sample_seed_from_top_empty(tmp_path) -> None:
+    conn = db.connect(tmp_path / "c.db")
+    _fill_catalog(conn, n=50)
+    assert (
+        recommend.sample_seed_from_top(conn, [], rng=random.Random(0)) is None
+    )
+
+
+def test_sample_seed_from_top_skips_missing(tmp_path) -> None:
+    conn = db.connect(tmp_path / "c.db")
+    ids = _fill_catalog(conn, n=50)
+    # only sp:3 is in catalog among tops
+    tops = [{"spotify_id": "missing"}, {"spotify_id": "sp:3"}, {"spotify_id": "also-missing"}]
+    emb = recommend.sample_seed_from_top(conn, tops, rng=random.Random(0))
+    assert emb is not None
+    expected = db.get_embedding(conn, ids[3])
+    assert expected is not None
+    assert all(abs(a - b) < 1e-5 for a, b in zip(emb, expected, strict=True))
+
+
+def test_sample_seed_from_top_prefers_higher_rank(tmp_path) -> None:
+    conn = db.connect(tmp_path / "c.db")
+    ids = _fill_catalog(conn, n=50)
+    tops = [{"spotify_id": f"sp:{i}"} for i in range(10)]
+    counts: dict[int, int] = {i: 0 for i in range(10)}
+    rng = random.Random(0)
+    for _ in range(300):
+        emb = recommend.sample_seed_from_top(conn, tops, tau=0.15, rng=rng)
+        assert emb is not None
+        # match embedding to track
+        for i in range(10):
+            e = db.get_embedding(conn, ids[i])
+            if e and all(abs(a - b) < 1e-5 for a, b in zip(emb, e, strict=True)):
+                counts[i] += 1
+                break
+    assert counts[0] > counts[9]
 
 
 def test_apply_cooldown() -> None:
@@ -182,7 +227,8 @@ def test_next_block_seed_used_by_caller(tmp_path) -> None:
     _fill_catalog(conn, n=50)
     first = recommend.recommend_block(conn, n=3, rng=random.Random(7))
     assert first["ok"]
-    seed = recommend.next_block_seed(first["last_embed"], first["session_start_embed"])
+    recency = first["session_start_embed"]
+    seed = recommend.next_block_seed(first["last_embed"], recency)
     second = recommend.recommend_block(
         conn,
         n=3,
@@ -191,4 +237,3 @@ def test_next_block_seed_used_by_caller(tmp_path) -> None:
         rng=random.Random(8),
     )
     assert second["ok"]
-    assert second["session_start_embed"] == first["session_start_embed"]

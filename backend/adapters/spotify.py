@@ -315,6 +315,28 @@ def _iter_pages(path: str, params: dict | None = None):
         data = api_get(next_url)
 
 
+def iter_top_tracks(time_range: str = "short_term", *, limit: int = 50):
+    """Yield simplified top-track rows (affinity list) in rank order."""
+    if time_range not in {"short_term", "medium_term", "long_term"}:
+        raise ValueError(f"invalid time_range: {time_range}")
+    capped = max(1, min(int(limit), 50))
+    data = api_get(
+        "/me/top/tracks",
+        {"time_range": time_range, "limit": capped},
+    )
+    for track in data.get("items") or []:
+        if not isinstance(track, dict) or not track.get("id"):
+            continue
+        artists = ", ".join(
+            a.get("name") or "" for a in (track.get("artists") or []) if a.get("name")
+        )
+        yield {
+            "spotify_id": track["id"],
+            "name": track.get("name") or "",
+            "artists": artists,
+        }
+
+
 def iter_owned_playlists():
     """Yield playlists owned by the signed-in user (not merely followed)."""
     me_id = get_me()["id"]
