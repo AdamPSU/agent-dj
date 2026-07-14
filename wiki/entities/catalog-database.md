@@ -19,6 +19,7 @@ tags:
 | `APP_DIR` | `~/.claude-dj` |
 | `DB_PATH` | `~/.claude-dj/catalog.db` |
 | `SPOTIFY_TOKEN_PATH` | `~/.claude-dj/spotify_tokens.json` |
+| `DEVICE_PATH` | `~/.claude-dj/device.json` |
 | `SPOTIFY_CLIENT_ID` | from env |
 
 ## DB helpers (selected)

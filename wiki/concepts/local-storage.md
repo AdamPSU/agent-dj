@@ -18,8 +18,10 @@ Claude DJ persists catalog data under `~/.claude-dj/` using **SQLite** with the 
 |------|----------|
 | `~/.claude-dj/catalog.db` | Playlists, tracks, membership, embeddings |
 | `~/.claude-dj/spotify_tokens.json` | OAuth tokens (mode 600) — not in the DB |
+| `~/.claude-dj/device.json` | Preferred Spotify Connect device id |
+| `~/.claude-dj/daemon.log` | Daemon stdout/stderr when CLI spawns it |
 
-Configured in `backend/config.py` as `APP_DIR`, `DB_PATH`, `SPOTIFY_TOKEN_PATH`.[^1]
+Configured in `backend/config.py` as `APP_DIR`, `DB_PATH`, `SPOTIFY_TOKEN_PATH`, `DEVICE_PATH`.[^1]
 
 ## Schema (logical)
 

@@ -1,8 +1,8 @@
 ---
 title: Recommendation blocks
-description: "The recommender builds **blocks of 3\u20135 tracks** for flow/vibe continuity\
-  \ over the indexed catalog. It is a **pure library** today; the play orchestrator\
-  \ will call it later."
+description: "The recommender builds **blocks of 3–5 tracks** for flow/vibe continuity\
+  \ over the indexed catalog. Pure library called by the orchestrator on /play and\
+  \ when the virtual queue empties."
 date: '2026-07-14'
 tags:
 - recommend
@@ -59,5 +59,5 @@ No dedicated CLI recommend command. Wired via orchestrator on `POST /play` / que
 - [Local storage](local-storage.md)
 - [Catalog sync](catalog-sync.md)
 
-[^1]: backend/recommend.py; tests/test_recommend.py
+[^1]: backend/music/recommend.py; tests/test_recommend.py
 
