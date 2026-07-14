@@ -27,13 +27,19 @@ Local OpenCode companion for Spotify during coding sessions.
 ## Commands
 
 ```sh
-uv run claude-dj play      # auth if needed, start daemon, kick catalog sync (orchestrator stub)
-uv run claude-dj status    # debug: counts + current track while embedding
-uv run claude-dj sync      # re-run catalog pull + embed pending/retry
+uv run claude-dj play              # auth if needed, start daemon, kick sync, mint + play block
+uv run claude-dj status            # debug: mode, queue, counts, now playing
+uv run claude-dj sync              # re-run catalog pull + embed pending/retry
+uv run claude-dj device            # list Spotify Connect devices + preferred id
+uv run claude-dj device <id>       # prefer a device (saved under ~/.claude-dj/)
 uv run claude-dj quit
 ```
 
 On play/sync the daemon pulls **owned** Spotify playlists, then for each `pending`/`retry` track: Deezer preview → MuQ embed → store (one at a time).
+
+When the catalog has ≥50 indexed tracks, `play` mints a recommendation block onto a **virtual queue** and starts the first track on Spotify Connect (`PUT /me/player/play` one URI at a time). A background monitor polls the player (~3–5s): advances within the plan, **yields** if you play something outside the plan, and mints the next block when the queue empties. Repeat `play` while attached is idempotent; after yield, `play` re-attaches with a new block.
+
+`/status` includes `mode` (`idle`|`attached`|`yielded`), `now_playing`, `virtual_queue`, `current_block`, `indexed`, `recommend_ready`.
 
 ## Local storage
 

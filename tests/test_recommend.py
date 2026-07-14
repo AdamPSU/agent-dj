@@ -1,9 +1,9 @@
 import math
 import random
 
-from backend.audio.embeddings import EMBED_DIM
+from backend.music.embeddings import EMBED_DIM
 from backend.storage import db
-from backend import recommend
+from backend.music import recommend
 
 
 def _unit(seed: float) -> list[float]:

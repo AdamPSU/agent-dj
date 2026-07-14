@@ -8,6 +8,7 @@ BASE_URL = f"http://{HOST}:{PORT}"
 APP_DIR = Path.home() / ".claude-dj"
 DB_PATH = APP_DIR / "catalog.db"
 SPOTIFY_TOKEN_PATH = APP_DIR / "spotify_tokens.json"
+DEVICE_PATH = APP_DIR / "device.json"
 SPOTIFY_CLIENT_ID = os.environ.get("SPOTIFY_CLIENT_ID", "")
 SPOTIFY_SCOPES = " ".join(
     [

@@ -1,30 +1,13 @@
----
-title: Log
-description: Chronological record of llmwiki migration, ingests, queries, and maintenance passes.
-date: 2026-07-08
-tags: [log, migration, maintenance]
----
+# Log
 
-Chronological record of ingests, queries, and maintenance passes.
+## [2026-07-14] update | Orchestrator + playback + music package
 
-## [2026-07-09] maintenance | Disconnect recommendation runtime glue
+- Updated [overview](overview.md) for E2E play path, `device`, virtual queue
+- Created [virtual-queue-playback](concepts/virtual-queue-playback.md), [orchestrator](entities/orchestrator.md), [playback-module](entities/playback-module.md)
+- Updated CLI, daemon, recommend, control-plane, spotify, muq paths to `backend/music/`
+- Key takeaway: DJ music path wired end-to-end; ElevenLabs still future
 
-- Preserved the similarity recommender as isolated code while removing daemon and CLI imports.
-- Removed generated playback, queue lookahead, cooldown, playback monitoring, and bridge narration orchestration from the daemon.
-- Changed `/dj start` to attach immediately and start or join background catalog sync.
+## [2026-07-14] lint | Full wiki rebuild
 
-## [2026-07-08] migration | Curated llmwiki migration kickoff
+- Nuked outdated session/playback/narration wiki; rebuilt for play-centric catalog + pure recommend
 
-- Initialized the repo-local llmwiki scaffold in `claude-dj-plugin`.
-- Indexed 50 repository sources into the local llmwiki source layer.
-- Chose a true merge: `wiki/` becomes the only canonical knowledge base, while code, tests, package metadata, and `README.md` remain evidence for implementation facts.
-- Replaced the placeholder overview with a migration hub, key findings table, knowledge-flow diagram, and migration queue.
-- Key takeaway: migrate by topic and cite current implementation files when legacy context conflicts with code.
-
-## [2026-07-08] migration | Merge legacy notes into wiki
-
-- Merged product identity and command-surface knowledge into [Claude DJ](entities/claude-dj.md).
-- Merged daemon and session-control knowledge into [Local Daemon Architecture](concepts/local-daemon-architecture.md) and [Session Control](concepts/session-control.md).
-- Merged playback, recommendation, Spotify adapter, narration, provider research, and roadmap notes into focused wiki pages.
-- Updated [Overview](overview.md) so `wiki/` is the only canonical knowledge base.
-- Key takeaway: future ideas and corrections should update the nearest existing wiki page directly instead of recreating a parallel note tree.

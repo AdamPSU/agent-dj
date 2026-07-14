@@ -7,7 +7,7 @@ import pytest
 import soundfile as sf
 import torch
 
-from backend.audio import embeddings
+from backend.music import embeddings
 
 
 def _sine_wav_bytes(seconds: float = 0.5, sr: int = 24_000) -> bytes:

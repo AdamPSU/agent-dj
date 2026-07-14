@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 
 from backend.adapters import deezer, spotify
 from backend.adapters.deezer import DeezerError
-from backend.audio.embeddings import EmbedError, embed_preview
+from backend.music.embeddings import EmbedError, embed_preview
 from backend.storage import db
 
 _lock = threading.Lock()

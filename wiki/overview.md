@@ -1,79 +1,92 @@
 ---
 title: Overview
-description: Canonical knowledge hub for Claude DJ product, architecture, implementation, and roadmap.
-date: 2026-07-08
-tags: [overview, claude-dj, architecture, roadmap]
+description: 'Claude DJ is a **local OpenCode companion** that indexes owned Spotify
+  playlists into MuQ-MuLan embeddings, mints vibe-continuity **blocks**, and plays
+  them on Spotify Connect via '
+date: '2026-07-14'
+tags:
+- overview
+- architecture
+- claude-dj
 ---
 
-This wiki is the single project knowledge base for Claude DJ. New ideas should update the nearest existing wiki page, wrong claims should be corrected in place, and only genuinely new concepts or entities should get new pages.
+Claude DJ is a **local OpenCode companion** that indexes owned Spotify playlists into MuQ-MuLan embeddings, mints vibe-continuity **blocks**, and plays them on Spotify Connect via a **virtual queue** (ElevenLabs narration still future).
 
 ## Scope
 
-- Wiki page count: 12 canonical pages after the legacy-note merge.
-- Source layer: code, tests, package metadata, and `README.md` remain evidence for implementation facts.
-- Canonical layer: `wiki/` owns product intent, architecture, provider research, roadmap, and operating decisions.
-- Archive layer: git history preserves old context files after deletion.
+Current `backend/` on `algorithm-v1` (2026-07-14). Ground truth: code + tests + README.
 
-## Knowledge Map
+| Layer | Role |
+|-------|------|
+| OpenCode `/dj` | Passes args to installed `claude-dj` |
+| CLI | Auth, spawn daemon, HTTP client |
+| Daemon | REST + catalog sync kick + orchestrator + monitor |
+| Sync + storage | Owned playlists → Deezer preview → embed → sqlite-vec |
+| `backend/music/` | embeddings, recommend, playback ports |
+| Orchestrator | Virtual queue, modes idle/attached/yielded, tick reconcile |
+
+## Commands
+
+`play` · `status` · `sync` · `device` · `device <id>` · `quit`
+
+- **`play`**: session + daemon + kick sync + mint block when ≥50 indexed + start Spotify (or `not_ready`)
+- **`device`**: list Connect devices; optional id saved to `~/.claude-dj/device.json`
+- No separate `init` / `spotify-login` / recommend CLI
+
+## Key findings
+
+1. End-to-end music path is wired: catalog → recommend → virtual queue → Connect play-one + poll monitor.[^1]
+2. Recommend needs **≥50 indexed** tracks; cold seed is random; next block blends 0.5 last + 0.5 session start.[^2]
+3. Spotify native queue is **not** the source of truth; app owns the plan; foreign tracks → **yield**.[^3]
+4. Package layout: control in top-level modules; music logic under `backend/music/`.[^4]
+5. Paths: tokens + preferred device + DB under `~/.claude-dj/`.[^5]
+
+## Architecture
 
 ```mermaid
-graph TD
-    A["Overview"] --> B["Product"]
-    A --> C["Architecture"]
-    A --> D["Disconnected playback and recommendation primitives"]
-    A --> E["Embeddings and providers"]
-    A --> F["Narration"]
-    A --> G["Roadmap"]
-    B --> B1["Claude DJ"]
-    C --> C1["Local daemon architecture"]
-    C --> C2["Session control"]
-    D --> D1["Spotify playback orchestration"]
-    D --> D2["Recommendation loop"]
-    D --> D3["Spotify adapter"]
-    E --> E1["Provider-gated audio embeddings"]
-    E --> E2["Audio source provider options"]
-    F --> F1["Optional narration"]
+flowchart LR
+  User --> CLI["claude-dj"]
+  CLI --> Daemon["FastAPI :8787"]
+  Daemon --> Sync
+  Daemon --> Orch["orchestrator"]
+  Sync --> Spotify
+  Sync --> Deezer
+  Sync --> Emb["music/embeddings"]
+  Sync --> DB
+  Orch --> Rec["music/recommend"]
+  Orch --> Play["music/playback"]
+  Rec --> DB
+  Play --> Spotify
 ```
 
-## Start Here
+## Recent updates
 
-| Question | Page |
-| --- | --- |
-| What is Claude DJ? | [Claude DJ](entities/claude-dj.md) |
-| Why is there a daemon? | [Local Daemon Architecture](concepts/local-daemon-architecture.md) |
-| How does session ownership work? | [Session Control](concepts/session-control.md) |
-| Which Spotify playback primitives are preserved? | [Spotify Playback Orchestration](concepts/spotify-playback-orchestration.md) |
-| Which recommendation implementation is preserved but disconnected? | [Recommendation Loop](concepts/recommendation-loop.md) |
-| What does the Spotify adapter own? | [Spotify Adapter](entities/spotify-adapter.md) |
-| What is the embedding-source policy? | [Provider-Gated Audio Embeddings](concepts/provider-gated-audio-embeddings.md) |
-| Which audio providers have been considered? | [Audio Source Provider Options](comparisons/audio-source-provider-options.md) |
-| How does narration work? | [Optional Narration](concepts/optional-narration.md) |
-| What is planned next? | [Roadmap](roadmap.md) |
+- **2026-07-14 (later):** Orchestrator, virtual-queue playback, device preference, `backend/music/` rename, daemon log on spawn failures.
+- **2026-07-14:** Wiki rebuild for play-centric CLI + catalog + pure recommend.
 
-## Key Current Facts
+## Page index
 
-| Fact | Canonical page | Evidence |
-| --- | --- | --- |
-| Claude DJ installs as a persistent CLI and global OpenCode `/dj` command. | [Claude DJ](entities/claude-dj.md) | README and installer code.[^1][^2] |
-| The CLI currently accepts `start`, `sync`, `status`, `quit`, `spotify-login`, `devices`, and `device`. | [Claude DJ](entities/claude-dj.md) | CLI parser.[^3] |
-| The local daemon owns session attachment and background catalog sync. | [Local Daemon Architecture](concepts/local-daemon-architecture.md) | Daemon state and handlers.[^4] |
-| The 3-6 track similarity implementation remains isolated and is not wired into runtime behavior. | [Recommendation Loop](concepts/recommendation-loop.md) | Similarity constants and production imports.[^5] |
-| Narration scripts and ElevenLabs audio generation remain isolated primitives. | [Optional Narration](concepts/optional-narration.md) | Narration script and TTS adapters.[^6][^7] |
+### Concepts
+- [Control plane](concepts/control-plane.md)
+- [Catalog sync](concepts/catalog-sync.md)
+- [Recommendation blocks](concepts/recommendation-blocks.md)
+- [Virtual queue playback](concepts/virtual-queue-playback.md)
+- [Local storage](concepts/local-storage.md)
 
-## Maintenance Rule
+### Entities
+- [claude-dj CLI](entities/claude-dj-cli.md)
+- [Daemon](entities/daemon.md)
+- [Orchestrator](entities/orchestrator.md)
+- [Spotify adapter](entities/spotify-adapter.md)
+- [Deezer adapter](entities/deezer-adapter.md)
+- [MuQ embeddings](entities/muq-embeddings.md)
+- [Recommend module](entities/recommend-module.md)
+- [Playback module](entities/playback-module.md)
+- [Catalog database](entities/catalog-database.md)
 
-Update the wiki directly. Do not create a parallel product-note tree; this wiki is the canonical knowledge store.
+[^1]: backend/daemon.py; backend/orchestrator.py; backend/music/playback.py
+[^2]: backend/music/recommend.py
+[^3]: docs/superpowers/specs/2026-07-14-playback-virtual-queue-design.md; backend/orchestrator.py
+[^4]: backend/music/
+[^5]: backend/config.py
 
-## Recent Updates
-
-- 2026-07-09: Disconnected recommendation, generated playback, queue lookahead, and narration orchestration from daemon and CLI runtime paths.
-- 2026-07-08: Merged legacy product, architecture, future-plan, provider, and narration notes into canonical llmwiki pages.
-- 2026-07-08: Initialized the repo-local llmwiki scaffold and indexed repository sources.
-
-[^1]: README.md
-[^2]: installer.py
-[^3]: cli.py
-[^4]: daemon.py
-[^5]: similarity.py
-[^6]: scripts.py
-[^7]: elevenlabs.py

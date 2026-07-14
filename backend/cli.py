@@ -5,15 +5,23 @@ import sys
 import time
 import urllib.error
 import urllib.request
+from pathlib import Path
 
-from backend.config import BASE_URL
+from backend.config import APP_DIR, BASE_URL
+
+DAEMON_WAIT_ATTEMPTS = 100  # 100 * 0.1s = 10s
+DAEMON_LOG = APP_DIR / "daemon.log"
 
 
-def request(method: str, path: str) -> dict:
+def request(method: str, path: str, body: dict | None = None) -> dict:
     """Send one control request to the local daemon and return its JSON reply."""
-    data = b"" if method == "POST" else None
+    data = None
+    if method == "POST":
+        data = b"" if body is None else json.dumps(body).encode()
     req = urllib.request.Request(f"{BASE_URL}{path}", data=data, method=method)
-    with urllib.request.urlopen(req, timeout=2) as resp:
+    if body is not None:
+        req.add_header("Content-Type", "application/json")
+    with urllib.request.urlopen(req, timeout=10) as resp:
         return json.loads(resp.read().decode())
 
 
@@ -30,18 +38,45 @@ def ensure_daemon() -> None:
     """Start the background daemon if it is not already running, then wait until it responds."""
     if reachable():
         return
-    subprocess.Popen(
+
+    APP_DIR.mkdir(parents=True, exist_ok=True)
+    log_handle = open(DAEMON_LOG, "ab", buffering=0)
+    proc = subprocess.Popen(
         [sys.executable, "-m", "backend.cli", "__daemon__"],
         start_new_session=True,
         stdin=subprocess.DEVNULL,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+        stdout=log_handle,
+        stderr=subprocess.STDOUT,
     )
-    for _ in range(50):
+    log_handle.close()
+
+    for _ in range(DAEMON_WAIT_ATTEMPTS):
         if reachable():
             return
+        if proc.poll() is not None:
+            tail = _daemon_log_tail()
+            raise SystemExit(
+                "daemon exited before becoming ready "
+                f"(exit={proc.returncode}). log: {DAEMON_LOG}\n{tail}"
+            )
         time.sleep(0.1)
-    raise SystemExit("daemon failed to start")
+
+    tail = _daemon_log_tail()
+    raise SystemExit(
+        f"daemon failed to start within {DAEMON_WAIT_ATTEMPTS * 0.1:.0f}s. "
+        f"log: {DAEMON_LOG}\n{tail}"
+    )
+
+
+def _daemon_log_tail(max_bytes: int = 2000) -> str:
+    path = Path(DAEMON_LOG)
+    if not path.exists():
+        return "(no daemon log)"
+    data = path.read_bytes()
+    if not data:
+        return "(daemon log empty)"
+    text = data[-max_bytes:].decode(errors="replace").strip()
+    return text or "(daemon log empty)"
 
 
 def ensure_spotify_login() -> None:
@@ -63,7 +98,13 @@ def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(prog="claude-dj")
     parser.add_argument(
         "command",
-        choices=["play", "status", "sync", "quit"],
+        choices=["play", "status", "sync", "device", "quit"],
+    )
+    parser.add_argument(
+        "device_id",
+        nargs="?",
+        default=None,
+        help="with `device`: Spotify device id to prefer (omit to list)",
     )
     args = parser.parse_args(argv)
 
@@ -76,6 +117,13 @@ def main(argv: list[str] | None = None) -> None:
             body = request("GET", "/status")
         elif args.command == "sync":
             body = request("POST", "/sync")
+        elif args.command == "device":
+            ensure_spotify_login()
+            ensure_daemon()
+            if args.device_id:
+                body = request("POST", f"/devices/{args.device_id}")
+            else:
+                body = request("GET", "/devices")
         else:
             body = request("POST", "/quit")
     except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:

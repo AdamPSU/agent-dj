@@ -1,6 +1,6 @@
 import math
 
-from backend.audio.embeddings import EMBED_DIM
+from backend.music.embeddings import EMBED_DIM
 from backend.storage import db
 
 

@@ -4,7 +4,7 @@ from pathlib import Path
 
 import sqlite_vec
 
-from backend.audio.embeddings import EMBED_DIM
+from backend.music.embeddings import EMBED_DIM
 from backend.config import APP_DIR, DB_PATH
 
 STATUSES = frozenset({"pending", "indexed", "skipped", "retry"})

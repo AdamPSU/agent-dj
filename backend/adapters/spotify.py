@@ -13,6 +13,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 
 from backend.config import (
     APP_DIR,
+    DEVICE_PATH,
     SPOTIFY_API_BASE,
     SPOTIFY_AUTHORIZE_URL,
     SPOTIFY_CLIENT_ID,
@@ -189,6 +190,115 @@ def api_get(path: str, params: dict | None = None) -> dict:
 def get_me() -> dict:
     """Return the signed-in Spotify user profile."""
     return api_get("/me")
+
+
+def api_put(path: str, body: dict | None = None, params: dict | None = None) -> None:
+    """PUT to the Spotify Web API (playback commands). Empty 204 is success."""
+    token = get_access_token()
+    if path.startswith("http"):
+        url = path
+    else:
+        url = f"{SPOTIFY_API_BASE}{path}"
+        if params:
+            url = f"{url}?{urllib.parse.urlencode(params)}"
+    data = None if body is None else json.dumps(body).encode()
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json",
+    }
+    req = urllib.request.Request(url, data=data, method="PUT", headers=headers)
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            resp.read()
+    except urllib.error.HTTPError as exc:
+        err_body = exc.read().decode(errors="replace")
+        raise RuntimeError(f"Spotify API {exc.code}: {err_body}") from exc
+
+
+def get_playback_state() -> dict | None:
+    """Return raw /me/player JSON, or None if 204 no content."""
+    token = get_access_token()
+    url = f"{SPOTIFY_API_BASE}/me/player"
+    req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            if resp.status == 204:
+                return None
+            raw = resp.read()
+            if not raw:
+                return None
+            return json.loads(raw.decode())
+    except urllib.error.HTTPError as exc:
+        if exc.code == 204:
+            return None
+        err_body = exc.read().decode(errors="replace")
+        raise RuntimeError(f"Spotify API {exc.code}: {err_body}") from exc
+
+
+def start_playback_uris(uris: list[str], *, device_id: str | None = None) -> None:
+    """Start playing specific track URIs on the active (or given) device."""
+    params = {"device_id": device_id} if device_id else None
+    api_put("/me/player/play", body={"uris": uris}, params=params)
+
+
+def set_shuffle(state: bool, *, device_id: str | None = None) -> None:
+    params: dict = {"state": "true" if state else "false"}
+    if device_id:
+        params["device_id"] = device_id
+    api_put("/me/player/shuffle", body=None, params=params)
+
+
+def set_repeat(state: str, *, device_id: str | None = None) -> None:
+    """state: off | track | context"""
+    params: dict = {"state": state}
+    if device_id:
+        params["device_id"] = device_id
+    api_put("/me/player/repeat", body=None, params=params)
+
+
+def list_devices() -> list[dict]:
+    """Return available Spotify Connect devices (simplified rows)."""
+    data = api_get("/me/player/devices")
+    rows = []
+    for d in data.get("devices") or []:
+        rows.append(
+            {
+                "id": d.get("id"),
+                "name": d.get("name") or "",
+                "type": d.get("type") or "",
+                "is_active": bool(d.get("is_active")),
+                "is_restricted": bool(d.get("is_restricted")),
+                "volume_percent": d.get("volume_percent"),
+            }
+        )
+    return rows
+
+
+def transfer_playback(device_id: str, *, play: bool = False) -> None:
+    """Make device the active Connect target (optionally start/resume play)."""
+    api_put("/me/player", body={"device_ids": [device_id], "play": play})
+
+
+def load_preferred_device_id() -> str | None:
+    if not DEVICE_PATH.exists():
+        return None
+    try:
+        data = json.loads(DEVICE_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    device_id = data.get("device_id")
+    return str(device_id) if device_id else None
+
+
+def save_preferred_device_id(device_id: str) -> None:
+    APP_DIR.mkdir(parents=True, exist_ok=True)
+    DEVICE_PATH.write_text(json.dumps({"device_id": device_id}), encoding="utf-8")
+    DEVICE_PATH.chmod(0o600)
+
+
+def clear_preferred_device_id() -> None:
+    if DEVICE_PATH.exists():
+        DEVICE_PATH.unlink()
 
 
 def _iter_pages(path: str, params: dict | None = None):

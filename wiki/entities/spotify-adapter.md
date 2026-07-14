@@ -1,48 +1,31 @@
 ---
-title: Spotify Adapter
-description: Current responsibilities and boundaries of the Spotify API adapter used by Claude DJ.
-date: 2026-07-09
-tags: [spotify, adapter, oauth, playback]
+title: Spotify adapter
+description: "`backend/adapters/spotify.py` \u2014 PKCE auth, catalog reads, player\
+  \ control, devices."
+date: '2026-07-14'
+tags:
+- spotify
+- oauth
+- devices
 ---
 
-The Spotify adapter owns low-level Spotify Web API interactions. Catalog indexing and CLI login/device commands actively use part of this surface. No current production component composes the playback methods into automatic music control.[^1][^2][^3]
+`backend/adapters/spotify.py` — PKCE auth, catalog reads, player control, devices.
 
-## Responsibilities
+## Auth
 
-| Area | Current support |
-| --- | --- |
-| OAuth | PKCE login and token-cache refresh flow. |
-| Devices | Fetch visible Spotify Connect devices and normalize them. |
-| Playback start | Send `PUT /me/player/play` with an optional device id. |
-| Playback state | Fetch current playback state for monitoring. |
-| Queue append | Add one Spotify URI to the queue. |
-| Playback options | Set repeat mode and shuffle state. |
-| Pause/resume | Pause and resume current playback for narration transitions. |
-| Playlists | Fetch playlists and playlist items for catalog sync. |
+Client id env `SPOTIFY_CLIENT_ID`; tokens `~/.claude-dj/spotify_tokens.json`. `ensure_session` validates via `/me` or re-login.
 
-## Boundary
+## Catalog
 
-```mermaid
-graph LR
-    A["CLI login and devices"] --> B["Spotify adapter"]
-    C["Future playback owner"] -.-> B
-    D["Catalog indexing"] --> B
-    B --> E["Spotify Web API"]
-```
+`iter_owned_playlists`, `iter_playlist_tracks` via `/playlists/{id}/items`.
 
-The adapter exposes Spotify-specific operations. `devices.py` retains preferred-device policy, but no daemon playback path currently invokes either playback surface.[^3]
+## Playback / devices
 
-## Current Missing Playback Controls
+- `get_playback_state`, `start_playback_uris`, shuffle/repeat
+- `list_devices`, `transfer_playback`
+- Preferred device file `~/.claude-dj/device.json`
 
-| Control | Status |
-| --- | --- |
-| Transfer playback | Not implemented. |
-| Skip current track | Not implemented. |
-| Clear or replace queue | Not available through the current adapter; queueing appends only. |
-| Rich user feedback | Not implemented. |
+Scopes include playlist read + playback read/modify.[^1]
 
-These gaps should stay in [Roadmap](../roadmap.md) until there is code support.
+[^1]: backend/adapters/spotify.py; backend/config.py
 
-[^1]: spotify.py
-[^2]: cli.py
-[^3]: devices.py
