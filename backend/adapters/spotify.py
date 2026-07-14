@@ -13,6 +13,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 
 from backend.config import (
     APP_DIR,
+    SPOTIFY_API_BASE,
     SPOTIFY_AUTHORIZE_URL,
     SPOTIFY_CLIENT_ID,
     SPOTIFY_SCOPES,
@@ -123,15 +124,123 @@ def tokens_missing() -> bool:
     return not SPOTIFY_TOKEN_PATH.exists()
 
 
+def clear_tokens() -> None:
+    """Forget saved Spotify credentials so the next login starts clean."""
+    if SPOTIFY_TOKEN_PATH.exists():
+        SPOTIFY_TOKEN_PATH.unlink()
+
+
 def get_access_token() -> str:
     """Return a valid Spotify access token, renewing it first if it has expired."""
     tokens = load_tokens()
     if tokens is None:
-        raise SystemExit("not logged in; run: claude-dj spotify-login")
+        raise RuntimeError("not logged in; run: claude-dj play")
     if time.time() >= float(tokens["expires_at"]):
-        tokens = refresh_tokens(tokens["refresh_token"])
+        if not SPOTIFY_CLIENT_ID:
+            raise RuntimeError(
+                "Spotify session expired and SPOTIFY_CLIENT_ID is not set; "
+                "export SPOTIFY_CLIENT_ID and run: claude-dj play"
+            )
+        try:
+            tokens = refresh_tokens(tokens["refresh_token"])
+        except urllib.error.HTTPError as exc:
+            body = exc.read().decode(errors="replace")
+            raise RuntimeError(f"Spotify token refresh failed ({exc.code}): {body}") from exc
         save_tokens(tokens)
     return tokens["access_token"]
+
+
+def session_is_valid() -> bool:
+    """True when we can refresh if needed and Spotify accepts the access token."""
+    try:
+        get_me()
+        return True
+    except Exception:
+        return False
+
+
+def ensure_session() -> None:
+    """Make sure Spotify auth works: refresh if possible, otherwise open browser login."""
+    if session_is_valid():
+        return
+    # Stale/invalid tokens block a clean re-login.
+    clear_tokens()
+    login()
+
+
+def api_get(path: str, params: dict | None = None) -> dict:
+    """Call the Spotify Web API with the saved user token."""
+    token = get_access_token()
+    if path.startswith("http"):
+        url = path
+    else:
+        url = f"{SPOTIFY_API_BASE}{path}"
+        if params:
+            url = f"{url}?{urllib.parse.urlencode(params)}"
+    req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            return json.loads(resp.read().decode())
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode(errors="replace")
+        raise RuntimeError(f"Spotify API {exc.code}: {body}") from exc
+
+
+def get_me() -> dict:
+    """Return the signed-in Spotify user profile."""
+    return api_get("/me")
+
+
+def _iter_pages(path: str, params: dict | None = None):
+    """Walk a paginated Spotify list endpoint."""
+    query = dict(params or {})
+    query.setdefault("limit", 50)
+    data = api_get(path, query)
+    while True:
+        for item in data.get("items") or []:
+            yield item
+        next_url = data.get("next")
+        if not next_url:
+            break
+        data = api_get(next_url)
+
+
+def iter_owned_playlists():
+    """Yield playlists owned by the signed-in user (not merely followed)."""
+    me_id = get_me()["id"]
+    for playlist in _iter_pages("/me/playlists"):
+        owner_id = (playlist.get("owner") or {}).get("id")
+        if owner_id == me_id:
+            yield playlist
+
+
+def iter_playlist_tracks(playlist_id: str):
+    """Yield simplified track rows from one playlist, skipping locals/episodes/missing."""
+    for row in _iter_pages(f"/playlists/{playlist_id}/items"):
+        if row.get("is_local"):
+            continue
+        # Spotify returns the media under "item" (newer) or "track" (legacy).
+        track = row.get("item") or row.get("track")
+        if not isinstance(track, dict):
+            continue
+        if track.get("is_local"):
+            continue
+        if track.get("type") != "track" or not track.get("id"):
+            continue
+        artists = ", ".join(
+            a.get("name") or "" for a in (track.get("artists") or []) if a.get("name")
+        )
+        album = track.get("album") or {}
+        external_ids = track.get("external_ids") or {}
+        yield {
+            "spotify_id": track["id"],
+            "name": track.get("name") or "",
+            "artists": artists,
+            "album_name": album.get("name"),
+            "duration_ms": track.get("duration_ms"),
+            "isrc": external_ids.get("isrc"),
+            "added_at": row.get("added_at"),
+        }
 
 
 def login() -> dict:

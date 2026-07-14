@@ -6,6 +6,7 @@ PORT = 8787
 BASE_URL = f"http://{HOST}:{PORT}"
 
 APP_DIR = Path.home() / ".claude-dj"
+DB_PATH = APP_DIR / "catalog.db"
 SPOTIFY_TOKEN_PATH = APP_DIR / "spotify_tokens.json"
 SPOTIFY_CLIENT_ID = os.environ.get("SPOTIFY_CLIENT_ID", "")
 SPOTIFY_SCOPES = " ".join(
@@ -19,3 +20,4 @@ SPOTIFY_SCOPES = " ".join(
 )
 SPOTIFY_AUTHORIZE_URL = "https://accounts.spotify.com/authorize"
 SPOTIFY_TOKEN_URL = "https://accounts.spotify.com/api/token"
+SPOTIFY_API_BASE = "https://api.spotify.com/v1"

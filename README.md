@@ -16,23 +16,31 @@ Local OpenCode companion for Spotify during coding sessions.
    ```sh
    export SPOTIFY_CLIENT_ID=<your-client-id>
    ```
-4. Log in:
+4. Run `play` (opens browser login if needed, starts daemon + catalog sync):
    ```sh
-   uv run claude-dj spotify-login
+   uv run claude-dj play
    ```
    Tokens: `~/.claude-dj/spotify_tokens.json` (mode `600`).
 
-`claude-dj start` runs login automatically if that token file is missing.
+`claude-dj play` checks that the saved session still works (refresh if needed). If the token file is missing, expired beyond refresh, or refresh fails, it opens browser login again.
 
 ## Commands
 
 ```sh
-uv run claude-dj spotify-login
-uv run claude-dj start
-uv run claude-dj status
-uv run claude-dj sync      # stub
+uv run claude-dj play      # auth if needed, start daemon, kick catalog sync (orchestrator stub)
+uv run claude-dj status    # debug: counts + current track while embedding
+uv run claude-dj sync      # re-run catalog pull + embed pending/retry
 uv run claude-dj quit
 ```
+
+On play/sync the daemon pulls **owned** Spotify playlists, then for each `pending`/`retry` track: Deezer preview → MuQ embed → store (one at a time).
+
+## Local storage
+
+SQLite catalog at `~/.claude-dj/catalog.db` with **sqlite-vec** (512-d nearest neighbor).
+
+Tables: `playlists`, `tracks`, `playlist_tracks`, `track_embeddings`.  
+Track status: `pending` | `indexed` | `skipped` | `retry`.
 
 ## Local embeddings (MuQ-MuLan)
 

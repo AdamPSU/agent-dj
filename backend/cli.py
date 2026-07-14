@@ -6,7 +6,7 @@ import time
 import urllib.error
 import urllib.request
 
-from backend.config import BASE_URL, SPOTIFY_TOKEN_PATH
+from backend.config import BASE_URL
 
 
 def request(method: str, path: str) -> dict:
@@ -45,16 +45,14 @@ def ensure_daemon() -> None:
 
 
 def ensure_spotify_login() -> None:
-    """If the user has never logged into Spotify here, run the browser login first."""
-    if SPOTIFY_TOKEN_PATH.exists():
-        return
-    from backend.adapters.spotify import login
+    """Ensure Spotify works before play: refresh tokens if needed, else browser login."""
+    from backend.adapters.spotify import ensure_session
 
-    login()
+    ensure_session()
 
 
 def main(argv: list[str] | None = None) -> None:
-    """Run a user command, or the hidden background-server mode used by start."""
+    """Run a user command, or the hidden background-server mode used by play."""
     argv = sys.argv[1:] if argv is None else argv
     if argv and argv[0] == "__daemon__":
         from backend.daemon import main as daemon_main
@@ -65,21 +63,15 @@ def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(prog="claude-dj")
     parser.add_argument(
         "command",
-        choices=["start", "status", "sync", "quit", "spotify-login"],
+        choices=["play", "status", "sync", "quit"],
     )
     args = parser.parse_args(argv)
 
-    if args.command == "spotify-login":
-        from backend.adapters.spotify import login
-
-        print(json.dumps(login()))
-        return
-
     try:
-        if args.command == "start":
+        if args.command == "play":
             ensure_spotify_login()
             ensure_daemon()
-            body = request("POST", "/start")
+            body = request("POST", "/play")
         elif args.command == "status":
             body = request("GET", "/status")
         elif args.command == "sync":

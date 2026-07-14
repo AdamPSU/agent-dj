@@ -1,4 +1,5 @@
 import io
+import os
 from unittest.mock import MagicMock, patch
 
 import numpy as np
@@ -26,6 +27,12 @@ def test_waveform_from_bytes_is_mono_24k() -> None:
     assert wav.shape[0] == 1
     assert wav.dtype == torch.float32
     assert wav.numel() > 0
+
+
+def test_quiet_c_stderr_restores_fd() -> None:
+    with embeddings._quiet_c_stderr():
+        pass
+    assert os.fstat(2).st_ino is not None
 
 
 def test_embed_preview_with_mocked_model() -> None:

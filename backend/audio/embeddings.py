@@ -1,7 +1,15 @@
+import contextlib
 import io
+import os
+import tempfile
 import urllib.error
 import urllib.request
+import warnings
 from functools import lru_cache
+
+# Keep librosa/joblib single-process so abrupt stops don't leave loky semaphore warnings.
+os.environ.setdefault("JOBLIB_MULTIPROCESSING", "0")
+os.environ.setdefault("LOKY_MAX_CPU_COUNT", "1")
 
 import librosa
 import numpy as np
@@ -14,6 +22,20 @@ EMBED_DIM = 512
 
 class EmbedError(Exception):
     """Raised when audio cannot be loaded or embedded."""
+
+
+@contextlib.contextmanager
+def _quiet_c_stderr():
+    """Hide noisy C-library messages (e.g. mpg123 ID3 warnings) during decode."""
+    devnull_fd = os.open(os.devnull, os.O_WRONLY)
+    saved_fd = os.dup(2)
+    try:
+        os.dup2(devnull_fd, 2)
+        yield
+    finally:
+        os.dup2(saved_fd, 2)
+        os.close(saved_fd)
+        os.close(devnull_fd)
 
 
 def pick_device() -> str:
@@ -31,28 +53,47 @@ def _load_model():
     from muq import MuQMuLan
 
     device = pick_device()
-    model = MuQMuLan.from_pretrained("OpenMuQ/MuQ-MuLan-large")
+    # MuQ loads a text tower from a base checkpoint; extra LM-head weights are unused noise.
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", FutureWarning)
+        model = MuQMuLan.from_pretrained("OpenMuQ/MuQ-MuLan-large")
     model = model.to(device).eval()
     return model, device
 
 
 def _waveform_from_bytes(data: bytes) -> torch.Tensor:
     """Decode audio bytes to a mono 24 kHz waveform tensor."""
+    # In-memory decode works for WAV; Deezer previews are MP3 and need a real path.
     try:
-        audio, sr = sf.read(io.BytesIO(data), always_2d=False)
+        with _quiet_c_stderr():
+            audio, sr = sf.read(io.BytesIO(data), always_2d=False)
+        if getattr(audio, "ndim", 1) > 1:
+            audio = np.mean(audio, axis=1)
+        if sr != SAMPLE_RATE:
+            audio = librosa.resample(
+                np.asarray(audio, dtype=np.float32),
+                orig_sr=sr,
+                target_sr=SAMPLE_RATE,
+            )
+        else:
+            audio = np.asarray(audio, dtype=np.float32)
     except Exception:
+        suffix = ".mp3" if data[:3] == b"ID3" or data[:2] == b"\xff\xfb" else ".bin"
+        fd, path = tempfile.mkstemp(suffix=suffix)
         try:
-            audio, sr = librosa.load(io.BytesIO(data), sr=SAMPLE_RATE, mono=True)
-            return torch.tensor(audio, dtype=torch.float32).unsqueeze(0)
+            with os.fdopen(fd, "wb") as handle:
+                handle.write(data)
+            with _quiet_c_stderr():
+                audio, _sr = librosa.load(path, sr=SAMPLE_RATE, mono=True)
+            audio = np.asarray(audio, dtype=np.float32)
         except Exception as exc:
             raise EmbedError(f"could not decode audio: {exc}") from exc
+        finally:
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
 
-    if getattr(audio, "ndim", 1) > 1:
-        audio = np.mean(audio, axis=1)
-    if sr != SAMPLE_RATE:
-        audio = librosa.resample(np.asarray(audio, dtype=np.float32), orig_sr=sr, target_sr=SAMPLE_RATE)
-    else:
-        audio = np.asarray(audio, dtype=np.float32)
     if audio.size == 0:
         raise EmbedError("audio is empty")
     return torch.tensor(audio, dtype=torch.float32).unsqueeze(0)

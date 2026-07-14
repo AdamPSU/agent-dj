@@ -39,6 +39,7 @@ def test_get_access_token_refreshes_when_expired(tmp_path: Path, monkeypatch) ->
     path = tmp_path / "spotify_tokens.json"
     monkeypatch.setattr(spotify, "APP_DIR", tmp_path)
     monkeypatch.setattr(spotify, "SPOTIFY_TOKEN_PATH", path)
+    monkeypatch.setattr(spotify, "SPOTIFY_CLIENT_ID", "test-client-id")
     path.write_text(
         json.dumps(
             {
@@ -81,3 +82,74 @@ def test_authorize_url_requires_client_id(monkeypatch) -> None:
 def test_tokens_missing_when_absent(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(spotify, "SPOTIFY_TOKEN_PATH", tmp_path / "missing.json")
     assert spotify.tokens_missing() is True
+
+
+def test_session_is_valid_true_when_me_works(monkeypatch) -> None:
+    monkeypatch.setattr(spotify, "get_me", lambda: {"id": "u1"})
+    assert spotify.session_is_valid() is True
+
+
+def test_session_is_valid_false_when_me_fails(monkeypatch) -> None:
+    def boom() -> dict:
+        raise RuntimeError("expired")
+
+    monkeypatch.setattr(spotify, "get_me", boom)
+    assert spotify.session_is_valid() is False
+
+
+def test_ensure_session_skips_login_when_valid(monkeypatch) -> None:
+    monkeypatch.setattr(spotify, "session_is_valid", lambda: True)
+    called = {"login": 0}
+
+    def fake_login() -> dict:
+        called["login"] += 1
+        return {"ok": True}
+
+    monkeypatch.setattr(spotify, "login", fake_login)
+    spotify.ensure_session()
+    assert called["login"] == 0
+
+
+def test_ensure_session_relogs_when_invalid(tmp_path: Path, monkeypatch) -> None:
+    path = tmp_path / "spotify_tokens.json"
+    path.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(spotify, "SPOTIFY_TOKEN_PATH", path)
+    monkeypatch.setattr(spotify, "session_is_valid", lambda: False)
+    called = {"login": 0}
+
+    def fake_login() -> dict:
+        called["login"] += 1
+        path.write_text('{"access_token":"x"}', encoding="utf-8")
+        return {"ok": True, "path": str(path)}
+
+    monkeypatch.setattr(spotify, "login", fake_login)
+    spotify.ensure_session()
+    assert called["login"] == 1
+    # stale file cleared before login
+    assert path.exists()
+
+
+def test_get_access_token_requires_client_id_when_expired(
+    tmp_path: Path, monkeypatch
+) -> None:
+    path = tmp_path / "spotify_tokens.json"
+    monkeypatch.setattr(spotify, "SPOTIFY_TOKEN_PATH", path)
+    monkeypatch.setattr(spotify, "SPOTIFY_CLIENT_ID", "")
+    path.write_text(
+        json.dumps(
+            {
+                "access_token": "old",
+                "refresh_token": "r",
+                "expires_at": time.time() - 10,
+                "scope": "x",
+                "token_type": "Bearer",
+            }
+        ),
+        encoding="utf-8",
+    )
+    try:
+        spotify.get_access_token()
+        assert False, "expected RuntimeError"
+    except RuntimeError as exc:
+        assert "SPOTIFY_CLIENT_ID" in str(exc)
+
