@@ -1,66 +1,102 @@
 # Claude DJ
 
-Local OpenCode companion for Spotify during coding sessions.
+Local Spotify DJ companion for coding sessions (Claude Code statusline + `/dj`).
 
-## Control plane
-
-```text
-/dj …  →  claude-dj CLI  →  localhost HTTP  →  daemon (FastAPI)
-```
-
-## Spotify setup
-
-1. Create an app in the [Spotify Developer Dashboard](https://developer.spotify.com/dashboard).
-2. Allow loopback redirects (`http://127.0.0.1/callback` style). Login uses an ephemeral local port.
-3. Export the client ID:
-   ```sh
-   export SPOTIFY_CLIENT_ID=<your-client-id>
-   ```
-4. Run `play` (opens browser login if needed, starts daemon + catalog sync):
-   ```sh
-   uv run claude-dj play
-   ```
-   Tokens: `~/.claude-dj/spotify_tokens.json` (mode `600`).
-
-`claude-dj play` checks that the saved session still works (refresh if needed). If the token file is missing, expired beyond refresh, or refresh fails, it opens browser login again. After upgrades that add OAuth scopes (e.g. `user-top-read` for cold-start seeding), re-run `play` so the browser consent screen can grant them.
-
-## Commands
+## Install
 
 ```sh
-uv run claude-dj play              # auth if needed, start daemon, kick sync, mint + play block
-uv run claude-dj status            # debug: mode, queue, counts, now playing
-uv run claude-dj sync              # re-run catalog pull + embed pending/retry
-uv run claude-dj device            # list Spotify Connect devices + preferred id
-uv run claude-dj device <id>       # prefer a device (saved under ~/.claude-dj/)
-uv run claude-dj quit
+curl -fsSL https://raw.githubusercontent.com/AdamPSU/claude-dj-plugin/main/install.sh | bash
 ```
 
-On play/sync the daemon pulls **owned** Spotify playlists, then for each `pending`/`retry` track: Deezer preview → MuQ embed → store (one at a time).
+This installs [`uv`](https://docs.astral.sh/uv/) if needed, puts `claude-dj` on your PATH, and runs **setup** (TTY wizard).
 
-When the catalog has ≥50 indexed tracks, `play` mints a recommendation block onto a **virtual queue** and loads the **whole block** on Spotify Connect (`PUT /me/player/play` with all block URIs) so client skip works within the plan. Cold start seeds from Spotify **top tracks** (rank-softmax; time range random among short/medium/long); the next block seed is `L2(0.7·last + 0.3·short_term recency)`. A background monitor polls the player (~3–5s): reconciles skips/advances within the plan, **yields** if you play something outside the plan, and mints the next block near the end of the last planned track. Repeat `play` while attached is idempotent; after yield, `play` re-attaches with a new block.
+### Spotify app (once)
 
-`/status` includes `mode` (`idle`|`attached`|`yielded`), `now_playing`, `virtual_queue`, `current_block`, `indexed`, `recommend_ready`.
+1. Create an app in the [Spotify Developer Dashboard](https://developer.spotify.com/dashboard).
+2. Add a loopback redirect (`http://127.0.0.1/callback` style — login uses an ephemeral local port).
+3. Paste the **Client ID** when setup asks (saved to `~/.claude-dj/config.json`). No shell `export` required.
+
+Optional non-interactive setup:
+
+```sh
+claude-dj setup --client-id <id> --device-id <connect-id> --yes
+```
+
+## Use
+
+```sh
+claude-dj play              # auth if needed, start daemon, mint + play
+claude-dj status
+claude-dj sync
+claude-dj device            # list Connect devices
+claude-dj device <id>       # prefer a device
+claude-dj quit
+claude-dj setup             # re-run wizard (idempotent)
+claude-dj uninstall         # restore statusline, remove /dj skill
+claude-dj uninstall --wipe  # also delete ~/.claude-dj
+```
+
+In **Claude Code**, after setup: `/dj play`, `/dj status`, …
+
+### Statusline
+
+Setup (and first `play`) wraps your existing Claude Code `statusLine`. When DJ is attached and/or catalog sync has work:
+
+```text
+♪ Four Tet — Baby · 1:42/3:10 · sync: 128/900 songs
+```
+
+## How it works
+
+```text
+/dj …  or  claude-dj  →  localhost HTTP  →  daemon (FastAPI)
+```
+
+On play/sync the daemon pulls **owned** Spotify playlists, then embeds pending tracks (Deezer preview → MuQ → sqlite-vec). Playback is a **virtual queue** on Spotify Connect (multi-URI blocks + 1s monitor).
 
 ## Local storage
 
-SQLite catalog at `~/.claude-dj/catalog.db` with **sqlite-vec** (512-d nearest neighbor).
+Under `~/.claude-dj/`:
 
-Tables: `playlists`, `tracks`, `playlist_tracks`, `track_embeddings`.  
-Track status: `pending` | `indexed` | `skipped` | `retry`.
+| Path | Purpose |
+|------|---------|
+| `config.json` | Spotify client ID (mode 600) |
+| `spotify_tokens.json` | OAuth tokens (mode 600) |
+| `device.json` | Preferred Connect device |
+| `catalog.db` | Playlists, tracks, embeddings |
+| `statusline.json` | Statusline install marker |
+| `daemon.log` | Background daemon log |
+
+Env `SPOTIFY_CLIENT_ID` still overrides the config file if set.
 
 ## Local embeddings (MuQ-MuLan)
 
-Track fingerprints use **MuQ-MuLan** (512-d), loaded once in the daemon process.
-
 - **Disk:** ~2.7 GB model download on first use (Hugging Face)
-- **RAM:** plan on ~4–8 GB free for comfortable single-stream inference (estimate)
-- **Device:** CUDA → MPS → CPU automatically
-- **Input:** Deezer preview URL or raw audio bytes streamed in memory (24 kHz mono)
+- **RAM:** ~4–8 GB free recommended
+- **Device:** CUDA → MPS → CPU
+
+## Package layout
+
+```text
+claude_dj/
+  cli.py              # argparse entry
+  config.py           # paths + client id
+  daemon/             # FastAPI control plane
+  session/            # plan + Session mint/reconcile
+  catalog/            # sqlite + sync
+  recommend/          # Focus/Taste blocks
+  playback/           # PlaybackPort + Spotify/Fake
+  embeddings/         # MuQ-MuLan
+  adapters/           # spotify, deezer
+  integrate/          # setup wizard, statusline, /dj skill
+```
 
 ## Development
 
 ```sh
+git clone https://github.com/AdamPSU/claude-dj-plugin
+cd claude-dj-plugin
 uv sync
 uv run pytest
+uv run claude-dj setup --client-id <id>
 ```
-
