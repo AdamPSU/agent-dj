@@ -132,15 +132,16 @@ def format_line(
 
 
 def resolve_install_command() -> str:
-    """Absolute command string written into Claude Code settings."""
+    """Absolute command string written into Claude Code settings (render only)."""
     exe = Path(sys.executable).resolve()
     sibling = exe.parent / "dj"
+    # Bare `dj statusline` is the user toggle; Claude Code must call --render.
     if sibling.is_file() and os.access(sibling, os.X_OK):
-        return f"{sibling} statusline"
+        return f"{sibling} statusline --render"
     which = shutil.which("dj")
     if which:
-        return f"{Path(which).resolve()} statusline"
-    return f"{exe} -m claude_dj.cli statusline"
+        return f"{Path(which).resolve()} statusline --render"
+    return f"{exe} -m claude_dj.cli statusline --render"
 
 
 def _read_json(path: Path) -> dict[str, Any] | None:
@@ -170,10 +171,12 @@ def is_our_command(command: str | None, *, install_command: str | None = None) -
     ours = (install_command or resolve_install_command()).strip()
     if cmd == ours:
         return True
-    # Match common installs: ".../dj statusline" or "... -m claude_dj.cli statusline"
-    return cmd.endswith(" statusline") and (
-        "/dj " in f" {cmd}" or cmd.startswith("dj ") or "claude_dj.cli" in cmd
-    )
+    # Match installs: ".../dj statusline" or "... statusline --render"
+    if "claude_dj.cli" in cmd and "statusline" in cmd:
+        return True
+    if cmd.endswith(" statusline") or " statusline --render" in cmd:
+        return "/dj" in cmd or cmd.startswith("dj ")
+    return False
 
 
 def _safe_previous(
@@ -218,15 +221,6 @@ def ensure_installed(
     marker_path = marker_path or STATUSLINE_MARKER
     cmd = install_command or resolve_install_command()
     try:
-        if is_installed(settings_path=settings_path, marker_path=marker_path):
-            # Repair a self-referential previous left by older installs.
-            marker = load_marker(marker_path) or {}
-            fixed = _safe_previous(marker.get("previous"), install_command=cmd)
-            if marker.get("previous") != fixed:
-                marker["previous"] = fixed
-                _write_json(marker_path, marker)
-            return {"ok": True, "action": "noop", "enabled": True, "command": cmd}
-
         settings = _read_json(settings_path) or {}
         current = settings.get("statusLine")
         if not isinstance(current, dict):
@@ -240,6 +234,18 @@ def ensure_installed(
             )
         else:
             previous = _safe_previous(current, install_command=cmd)
+
+        already = (
+            isinstance(current, dict)
+            and current.get("command") == cmd
+            and marker_existing.get("installed_command") == cmd
+        )
+        if already:
+            fixed = _safe_previous(marker_existing.get("previous"), install_command=cmd)
+            if marker_existing.get("previous") != fixed:
+                marker_existing["previous"] = fixed
+                _write_json(marker_path, marker_existing)
+            return {"ok": True, "action": "noop", "enabled": True, "command": cmd}
 
         marker = {
             "version": MARKER_VERSION,
@@ -255,9 +261,12 @@ def ensure_installed(
         }
         if isinstance(previous, dict) and "padding" in previous:
             new_sl["padding"] = previous["padding"]
+        elif isinstance(current, dict) and "padding" in current:
+            new_sl["padding"] = current["padding"]
         settings["statusLine"] = new_sl
         _write_json(settings_path, settings)
-        return {"ok": True, "action": "installed", "enabled": True, "command": cmd}
+        action = "updated" if marker_existing.get("installed_command") else "installed"
+        return {"ok": True, "action": action, "enabled": True, "command": cmd}
     except OSError as exc:
         return {"ok": False, "error": str(exc)}
 

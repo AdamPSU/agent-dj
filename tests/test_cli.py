@@ -81,22 +81,22 @@ def test_kill_when_daemon_down(capsys) -> None:
     assert json.loads(capsys.readouterr().out) == {"ok": True}
 
 
-def test_statusline_toggle_subcommand(capsys) -> None:
+def test_statusline_bare_toggles(capsys) -> None:
     with patch(
         "claude_dj.integrate.statusline.toggle",
         return_value={"ok": True, "action": "installed", "enabled": True},
     ) as toggle:
-        cli.main(["statusline", "toggle"])
+        cli.main(["statusline"])
     toggle.assert_called_once_with()
     assert json.loads(capsys.readouterr().out)["enabled"] is True
 
 
-def test_statusline_bare_renders(capsys) -> None:
+def test_statusline_render_flag(capsys) -> None:
     with patch(
         "claude_dj.integrate.statusline.run",
         return_value="♪ Four Tet — Baby · 0:01/0:02",
     ) as run:
-        cli.main(["statusline"])
+        cli.main(["statusline", "--render"])
     run.assert_called_once_with()
     assert "Four Tet" in capsys.readouterr().out
 

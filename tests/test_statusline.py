@@ -188,7 +188,7 @@ def test_ensure_installed_wraps_and_is_idempotent(tmp_path: Path) -> None:
         ),
         encoding="utf-8",
     )
-    cmd = "/abs/dj statusline"
+    cmd = "/abs/dj statusline --render"
     out = statusline.ensure_installed(
         settings_path=settings,
         marker_path=marker,
@@ -275,7 +275,7 @@ def test_jam_auto_installs_statusline(monkeypatch, capsys) -> None:
 def test_ensure_installed_never_saves_self_as_previous(tmp_path: Path) -> None:
     settings = tmp_path / "settings.json"
     marker = tmp_path / "statusline.json"
-    cmd = "/abs/dj statusline"
+    cmd = "/abs/dj statusline --render"
     # Broken state: settings already point at us, no real previous.
     settings.write_text(
         json.dumps({"statusLine": {"type": "command", "command": cmd}}),
@@ -293,7 +293,7 @@ def test_ensure_installed_never_saves_self_as_previous(tmp_path: Path) -> None:
 
 def test_run_skips_self_referential_previous(monkeypatch, tmp_path: Path) -> None:
     marker = tmp_path / "statusline.json"
-    cmd = "/abs/dj statusline"
+    cmd = "/abs/dj statusline --render"
     marker.write_text(
         json.dumps(
             {
@@ -331,7 +331,7 @@ def test_run_skips_self_referential_previous(monkeypatch, tmp_path: Path) -> Non
 def test_ensure_installed_repairs_self_previous_on_noop(tmp_path: Path) -> None:
     settings = tmp_path / "settings.json"
     marker = tmp_path / "statusline.json"
-    cmd = "/abs/dj statusline"
+    cmd = "/abs/dj statusline --render"
     settings.write_text(
         json.dumps({"statusLine": {"type": "command", "command": cmd}}),
         encoding="utf-8",
@@ -371,7 +371,7 @@ def test_toggle_enable_then_disable(tmp_path: Path) -> None:
         ),
         encoding="utf-8",
     )
-    cmd = "/abs/dj statusline"
+    cmd = "/abs/dj statusline --render"
     on = statusline.toggle(
         settings_path=settings,
         marker_path=marker,
