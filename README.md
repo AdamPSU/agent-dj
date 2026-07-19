@@ -26,27 +26,29 @@ dj setup --client-id <id> --device-id <connect-id>
 ## Use
 
 ```sh
-dj play              # auth if needed, start daemon, mint + play
-dj status
+dj jam               # start/resume recommender; enables statusline
+dj statusline        # toggle Claude Code status bar on/off
+dj kill              # stop daemon (jam + bar process). Spotify keeps playing
 dj sync
 dj device            # list Connect devices
 dj device <id>       # prefer a device
-dj quit
 dj setup             # re-run wizard (idempotent)
+dj help
 ```
 
 In **Claude Code**, prefer shell/command mode for zero model lag:
 
 ```text
-!dj play
-!dj status
+!dj jam
+!dj statusline
+!dj kill
 ```
 
 (Optional skill still installs as `/dj` → same CLI.)
 
 ### Statusline
 
-Setup (and first `play`) wraps your existing Claude Code `statusLine`. When DJ is attached and/or catalog sync has work:
+Setup and `dj jam` enable the bar (wrap your existing Claude Code `statusLine`). Toggle anytime with `dj statusline`. While the daemon is up, any Spotify now-playing and/or catalog sync work shows:
 
 ```text
 ♪ Four Tet — Baby · 1:42/3:10 · sync: 128/900 songs
@@ -58,7 +60,7 @@ Setup (and first `play`) wraps your existing Claude Code `statusLine`. When DJ i
 dj …  →  localhost HTTP  →  daemon (FastAPI)
 ```
 
-On play/sync the daemon pulls **owned** Spotify playlists, then embeds pending tracks (Deezer preview → MuQ → sqlite-vec). Playback is a **virtual queue** on Spotify Connect (multi-URI blocks + 1s monitor).
+On jam/sync the daemon pulls **owned** Spotify playlists, then embeds pending tracks (Deezer preview → MuQ → sqlite-vec). Recommender playback is a **virtual queue** on Spotify Connect (multi-URI blocks + 1s monitor).
 
 ## Local storage
 

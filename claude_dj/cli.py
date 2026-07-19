@@ -12,6 +12,25 @@ from claude_dj.config import APP_DIR, BASE_URL
 DAEMON_WAIT_ATTEMPTS = 100  # 100 * 0.1s = 10s
 DAEMON_LOG = APP_DIR / "daemon.log"
 
+HELP_TEXT = """\
+dj — local Spotify coding companion
+
+Commands:
+  setup                 Interactive setup (Spotify + MuQ + statusline)
+  jam                   Start/resume recommender; enables statusline
+  kill                  Stop daemon (jam + bar process). Spotify keeps playing
+  statusline            Toggle Claude Code status bar on/off
+  sync                  Kick catalog sync
+  device [id]           List Connect devices, or prefer one
+  help                  Show this help
+
+Examples:
+  dj setup
+  dj jam
+  dj statusline
+  dj kill
+"""
+
 
 def request(method: str, path: str, body: dict | None = None) -> dict:
     """Send one control request to the local daemon and return its JSON reply."""
@@ -80,7 +99,7 @@ def _daemon_log_tail(max_bytes: int = 2000) -> str:
 
 
 def ensure_spotify_login() -> None:
-    """Ensure Spotify works before play: refresh tokens if needed, else browser login."""
+    """Ensure Spotify works before jam: refresh tokens if needed, else browser login."""
     from claude_dj.adapters.spotify import ensure_session
 
     ensure_session()
@@ -108,29 +127,40 @@ def _cmd_setup(argv: list[str]) -> None:
         help="Skip playback device selection",
     )
     args = parser.parse_args(argv)
-    out = setup_wizard.run(
+    setup_wizard.run(
         client_id=args.client_id,
         device_id=args.device_id,
         force=args.force,
         skip_claude=args.skip_claude,
         skip_device=args.skip_device,
     )
-    print(json.dumps(out))
 
 
 def _cmd_statusline(argv: list[str]) -> None:
+    """Toggle when run interactively; render when Claude Code invokes (piped stdin)."""
     from claude_dj.integrate import statusline as statusline_mod
 
     if argv:
-        print(f"unknown statusline subcommand: {argv[0]}", file=sys.stderr)
+        print(f"unknown statusline argument: {argv[0]}", file=sys.stderr)
         raise SystemExit(2)
-    out = statusline_mod.run()
-    if out:
-        sys.stdout.write(out if out.endswith("\n") else out + "\n")
+
+    # Claude Code pipes JSON on stdin (not a TTY). Users toggle from a real TTY.
+    if sys.stdin.isatty():
+        out = statusline_mod.toggle()
+        _emit(out)
+        return
+
+    rendered = statusline_mod.run()
+    if rendered:
+        sys.stdout.write(rendered if rendered.endswith("\n") else rendered + "\n")
+
+
+def _cmd_help() -> None:
+    sys.stdout.write(HELP_TEXT)
 
 
 def main(argv: list[str] | None = None) -> None:
-    """Run a user command, or the hidden background-server mode used by play."""
+    """Run a user command, or the hidden background-server mode used by jam."""
     argv = sys.argv[1:] if argv is None else argv
     if argv and argv[0] == "__daemon__":
         from claude_dj.daemon.server import main as daemon_main
@@ -138,12 +168,9 @@ def main(argv: list[str] | None = None) -> None:
         daemon_main()
         return
 
-    if not argv:
-        print(
-            "usage: dj <setup|play|status|sync|device|quit|statusline>",
-            file=sys.stderr,
-        )
-        raise SystemExit(2)
+    if not argv or argv[0] in ("help", "-h", "--help"):
+        _cmd_help()
+        return
 
     cmd, rest = argv[0], argv[1:]
 
@@ -169,29 +196,58 @@ def main(argv: list[str] | None = None) -> None:
         _emit(body)
         return
 
-    if cmd not in ("play", "status", "sync", "quit"):
-        print(f"unknown command: {cmd}", file=sys.stderr)
-        raise SystemExit(2)
-
-    try:
-        if cmd == "play":
+    if cmd == "jam":
+        try:
             from claude_dj.integrate import statusline as statusline_mod
 
             statusline_mod.ensure_installed()
             ensure_spotify_login()
             ensure_daemon()
-            body = request("POST", "/play")
-        elif cmd == "status":
-            body = request("GET", "/status")
-        elif cmd == "sync":
-            body = request("POST", "/sync")
-        else:
-            body = request("POST", "/quit")
-    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
-        print(exc, file=sys.stderr)
-        raise SystemExit(1) from exc
+            body = request("POST", "/jam")
+        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
+            print(exc, file=sys.stderr)
+            raise SystemExit(1) from exc
+        _emit(body)
+        return
 
-    _emit(body)
+    if cmd == "sync":
+        try:
+            if not reachable():
+                ensure_spotify_login()
+                ensure_daemon()
+            body = request("POST", "/sync")
+        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
+            print(exc, file=sys.stderr)
+            raise SystemExit(1) from exc
+        _emit(body)
+        return
+
+    if cmd == "kill":
+        try:
+            if not reachable():
+                print(json.dumps({"ok": True}))
+                return
+            body = request("POST", "/kill")
+        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
+            print(exc, file=sys.stderr)
+            raise SystemExit(1) from exc
+        _emit(body)
+        return
+
+    if cmd in ("attach", "detach", "quit", "play", "status"):
+        hints = {
+            "attach": "removed; use `dj statusline` to enable the bar, `dj jam` to play",
+            "detach": "removed; use `dj kill` to stop the daemon",
+            "quit": "removed; use `dj kill` to stop the daemon",
+            "play": "removed; use `dj jam`",
+            "status": "removed; use the statusline (`dj statusline` / `dj jam`)",
+        }
+        print(f"dj {cmd} is {hints[cmd]}", file=sys.stderr)
+        raise SystemExit(2)
+
+    print(f"unknown command: {cmd}", file=sys.stderr)
+    _cmd_help()
+    raise SystemExit(2)
 
 
 def _emit(body: dict) -> None:

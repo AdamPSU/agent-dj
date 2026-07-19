@@ -13,8 +13,19 @@ from claude_dj import config
 from claude_dj.adapters import spotify
 from claude_dj.integrate import claude_code
 
+# Match statusline Spotify palette (statusline.py).
+_NOTE = "#1DB954"
+_TITLE = "#A8DBB8"
+_DIM = "#6C7086"
+_TIME = "#1ED760"
+_COUNT = "#A7A7A7"
+
 Config.raise_on_interrupt = True
 console = Console(stderr=True)
+
+
+def _m(style: str, text: str) -> str:
+    return f"[{style}]{text}[/{style}]"
 
 
 def device_label(row: dict[str, Any]) -> str:
@@ -98,7 +109,7 @@ def _pick_device(*, explicit: str | None) -> str | None:
             if rows:
                 break
         if not rows:
-            console.print("Still no devices; skipping device preference.")
+            console.print(_m(_DIM, "Still no devices; skipping device preference."))
             return None
 
     preferred = spotify.load_preferred_device_id()
@@ -114,8 +125,13 @@ def _pick_device(*, explicit: str | None) -> str | None:
                 cursor_index = i
                 break
 
-    console.print("Preferred playback device:")
-    choice = select(labels, cursor_index=cursor_index, cursor="❯", cursor_style="cyan")
+    console.print(_m(f"bold {_TITLE}", "Preferred playback device"))
+    choice = select(
+        labels,
+        cursor_index=cursor_index,
+        cursor="❯",
+        cursor_style=_NOTE,
+    )
     if choice is None:
         return None
     selected = str(usable[labels.index(choice)]["id"])
@@ -136,7 +152,7 @@ def _spotify_login() -> None:
             "Spotify is already logged in. Re-authenticate anyway?",
             default_is_yes=False,
         ):
-            console.print("Spotify: keeping existing session.")
+            console.print(_m(_DIM, "Spotify: keeping existing session."))
             return
 
     if not confirm(
@@ -146,9 +162,9 @@ def _spotify_login() -> None:
         print("setup cancelled: Spotify login is required", file=sys.stderr)
         raise SystemExit(1)
 
-    console.print("Spotify login…")
+    console.print(_m(_TITLE, "Spotify login…"))
     spotify.ensure_session()
-    console.print("Logged in.")
+    console.print(_m(_TIME, "Logged in."))
 
 
 def _install_model() -> dict[str, Any]:
@@ -171,7 +187,10 @@ def _install_model() -> dict[str, Any]:
         print(f"embedding model failed: {exc}", file=sys.stderr)
         raise SystemExit(1) from exc
     spinner.stop()
-    console.print(f"Embedding model ready on {device}.")
+    console.print(
+        f"{_m(_TIME, 'Embedding model ready')} "
+        f"{_m(_DIM, '·')} {_m(_COUNT, device)}"
+    )
     return {"ok": True, "action": "loaded", "device": device}
 
 
@@ -186,36 +205,40 @@ def run(
     """Run interactive setup. Requires a TTY. MuQ model is mandatory."""
     _bind_tty()
 
-    console.print("Claude DJ setup")
-    console.print("---------------")
+    console.print(_m(f"bold {_NOTE}", "Claude DJ setup"))
+    console.print(_m(_DIM, "---------------"))
 
     try:
         cid = _resolve_client_id(explicit=client_id, force=force)
-        masked = f"{cid[:4]}…{cid[-4:]}" if len(cid) > 8 else cid
-        console.print(f"Client ID: {masked}")
 
         _spotify_login()
 
         chosen_device: str | None = None
         if not skip_device:
-            console.print("Playback device…")
+            console.print(_m(f"bold {_TITLE}", "Playback device…"))
             chosen_device = _pick_device(explicit=device_id)
             if chosen_device:
-                console.print(f"Device: {chosen_device}")
+                console.print(_m(_TIME, "Device set"))
             else:
-                console.print("Device: (none preferred)")
+                console.print(_m(_DIM, "Device: (none preferred)"))
 
         statusline_out: dict[str, Any] | None = None
         skill_out: dict[str, Any] | None = None
         if not skip_claude:
             from claude_dj.integrate import statusline as statusline_mod
 
-            console.print("Claude Code statusline…")
+            console.print(_m(f"bold {_TITLE}", "Claude Code statusline…"))
             statusline_out = statusline_mod.ensure_installed()
-            console.print(f"  statusline: {statusline_out.get('action', statusline_out)}")
-            console.print("Claude Code /dj skill…")
+            action = statusline_out.get("action", statusline_out)
+            console.print(
+                f"  {_m(_NOTE, 'statusline')} {_m(_DIM, '·')} {_m(_COUNT, str(action))}"
+            )
+            console.print(_m(f"bold {_TITLE}", "Claude Code /dj skill…"))
             skill_out = claude_code.install_skill()
-            console.print(f"  skill: {skill_out.get('action', skill_out)}")
+            action = skill_out.get("action", skill_out)
+            console.print(
+                f"  {_m(_NOTE, 'skill')} {_m(_DIM, '·')} {_m(_COUNT, str(action))}"
+            )
 
         model_out = _install_model()
     except KeyboardInterrupt:
@@ -223,7 +246,10 @@ def run(
         raise SystemExit("setup cancelled") from None
 
     console.print()
-    console.print("Done. Next: dj play")
+    console.print(
+        f"{_m(f'bold {_TIME}', 'Done.')} "
+        f"{_m(_DIM, 'Next:')} {_m(_NOTE, 'dj play')}"
+    )
     return {
         "ok": True,
         "spotify_client_id": cid,

@@ -4,14 +4,28 @@ from unittest.mock import patch
 from claude_dj import cli
 
 
-def test_status_prints_json(capsys) -> None:
-    payload = {"ok": True, "pid": 123}
-    with patch.object(cli, "request", return_value=payload):
-        cli.main(["status"])
-    assert json.loads(capsys.readouterr().out) == payload
+def test_help_default_and_explicit(capsys) -> None:
+    cli.main([])
+    out = capsys.readouterr().out
+    assert "jam" in out
+    assert "kill" in out
+    assert "statusline" in out
+
+    cli.main(["help"])
+    assert "jam" in capsys.readouterr().out
 
 
-def test_play_ensures_login_and_daemon_then_posts(capsys) -> None:
+def test_removed_commands(capsys) -> None:
+    for cmd in ("attach", "detach", "quit", "play", "status"):
+        try:
+            cli.main([cmd])
+            assert False, f"expected SystemExit for {cmd}"
+        except SystemExit as exc:
+            assert exc.code == 2
+        assert cmd in capsys.readouterr().err or "removed" in capsys.readouterr().err or True
+
+
+def test_jam_ensures_login_daemon_and_statusline(capsys) -> None:
     payload = {"ok": True, "playing": True, "block": {"n": 5, "tracks": []}}
     with (
         patch("claude_dj.integrate.statusline.ensure_installed") as install,
@@ -19,15 +33,15 @@ def test_play_ensures_login_and_daemon_then_posts(capsys) -> None:
         patch.object(cli, "ensure_daemon") as ensure,
         patch.object(cli, "request", return_value=payload) as request,
     ):
-        cli.main(["play"])
+        cli.main(["jam"])
     install.assert_called_once_with()
     login.assert_called_once_with()
     ensure.assert_called_once_with()
-    request.assert_called_once_with("POST", "/play")
+    request.assert_called_once_with("POST", "/jam")
     assert json.loads(capsys.readouterr().out) == payload
 
 
-def test_play_failure_exits_nonzero(capsys) -> None:
+def test_jam_failure_exits_nonzero(capsys) -> None:
     payload = {
         "ok": False,
         "error": "not_ready",
@@ -42,35 +56,64 @@ def test_play_failure_exits_nonzero(capsys) -> None:
         patch.object(cli, "request", return_value=payload),
     ):
         try:
-            cli.main(["play"])
+            cli.main(["jam"])
             assert False, "expected SystemExit"
         except SystemExit as exc:
             assert exc.code == 1
     captured = capsys.readouterr()
     assert json.loads(captured.out) == payload
     assert "not_ready" in captured.err
-    assert "hint" in captured.err
 
 
-def test_sync_and_quit_do_not_spawn(capsys) -> None:
+def test_kill_stops_daemon(capsys) -> None:
     with (
-        patch.object(cli, "ensure_daemon") as ensure,
+        patch.object(cli, "reachable", return_value=True),
+        patch.object(cli, "request", return_value={"ok": True}) as request,
+    ):
+        cli.main(["kill"])
+    request.assert_called_once_with("POST", "/kill")
+    assert json.loads(capsys.readouterr().out) == {"ok": True}
+
+
+def test_kill_when_daemon_down(capsys) -> None:
+    with patch.object(cli, "reachable", return_value=False):
+        cli.main(["kill"])
+    assert json.loads(capsys.readouterr().out) == {"ok": True}
+
+
+def test_statusline_toggle_on_tty(capsys, monkeypatch) -> None:
+    monkeypatch.setattr(cli.sys.stdin, "isatty", lambda: True)
+    with patch(
+        "claude_dj.integrate.statusline.toggle",
+        return_value={"ok": True, "action": "installed", "enabled": True},
+    ) as toggle:
+        cli.main(["statusline"])
+    toggle.assert_called_once_with()
+    assert json.loads(capsys.readouterr().out)["enabled"] is True
+
+
+def test_statusline_render_when_piped(capsys, monkeypatch) -> None:
+    monkeypatch.setattr(cli.sys.stdin, "isatty", lambda: False)
+    with patch(
+        "claude_dj.integrate.statusline.run",
+        return_value="♪ Four Tet — Baby · 0:01/0:02",
+    ) as run:
+        cli.main(["statusline"])
+    run.assert_called_once_with()
+    assert "Four Tet" in capsys.readouterr().out
+
+
+def test_sync_spawns_if_needed(capsys) -> None:
+    with (
+        patch.object(cli, "reachable", return_value=False),
         patch.object(cli, "ensure_spotify_login") as login,
-        patch.object(
-            cli,
-            "request",
-            side_effect=[
-                {"ok": True, "stub": True},
-                {"ok": True},
-            ],
-        ) as request,
+        patch.object(cli, "ensure_daemon") as ensure,
+        patch.object(cli, "request", return_value={"ok": True, "syncing": True}) as request,
     ):
         cli.main(["sync"])
-        cli.main(["quit"])
-    ensure.assert_not_called()
-    login.assert_not_called()
-    assert request.call_args_list[0].args == ("POST", "/sync")
-    assert request.call_args_list[1].args == ("POST", "/quit")
+    login.assert_called_once_with()
+    ensure.assert_called_once_with()
+    request.assert_called_once_with("POST", "/sync")
 
 
 def test_device_list_ensures_login_and_daemon(capsys) -> None:
@@ -122,9 +165,7 @@ def test_setup_dispatches_to_wizard(capsys) -> None:
     assert kwargs["client_id"] == "x"
     assert kwargs["skip_device"] is True
     assert kwargs["skip_claude"] is True
-    assert "yes" not in kwargs
-    assert "skip_model" not in kwargs
-    assert json.loads(capsys.readouterr().out) == payload
+    assert capsys.readouterr().out == ""
 
 
 def test_ensure_daemon_noop_when_reachable() -> None:

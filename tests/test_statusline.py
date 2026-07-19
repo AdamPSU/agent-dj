@@ -115,6 +115,27 @@ def test_format_hidden_when_idle_and_not_syncing() -> None:
     )
 
 
+def test_format_idle_spotify_playback() -> None:
+    line = statusline.format_line(
+        {
+            "mode": "idle",
+            "syncing": False,
+            "indexed": 10,
+            "catalog_total": 10,
+            "now_playing": {
+                "name": "Baby",
+                "artists": "Four Tet",
+                "progress_ms": 102_000,
+                "duration_ms": 190_000,
+                "spotify_id": "abc",
+            },
+        },
+        color=False,
+        now=0.0,
+    )
+    assert line == "♪ Four Tet — Baby · 1:42/3:10"
+
+
 def test_format_hidden_when_sync_complete() -> None:
     assert (
         statusline.format_line(
@@ -232,7 +253,7 @@ def test_run_appends_dj_under_user(monkeypatch, tmp_path: Path) -> None:
     assert "0:01/0:02" in dj
 
 
-def test_play_auto_installs_statusline(monkeypatch, capsys) -> None:
+def test_jam_auto_installs_statusline(monkeypatch, capsys) -> None:
     from claude_dj import cli
 
     called: list[int] = []
@@ -241,13 +262,61 @@ def test_play_auto_installs_statusline(monkeypatch, capsys) -> None:
         called.append(1)
         return {"ok": True, "action": "installed"}
 
-    with (
-        monkeypatch.context() as m,
-    ):
+    with monkeypatch.context() as m:
         m.setattr("claude_dj.integrate.statusline.ensure_installed", fake_ensure)
         m.setattr(cli, "ensure_spotify_login", lambda: None)
         m.setattr(cli, "ensure_daemon", lambda: None)
         m.setattr(cli, "request", lambda *a, **k: {"ok": True})
-        cli.main(["play"])
+        cli.main(["jam"])
     assert called == [1]
     assert json.loads(capsys.readouterr().out)["ok"] is True
+
+
+def test_toggle_enable_then_disable(tmp_path: Path) -> None:
+    settings = tmp_path / "settings.json"
+    marker = tmp_path / "statusline.json"
+    settings.write_text(
+        json.dumps(
+            {
+                "statusLine": {
+                    "type": "command",
+                    "command": "bash /tmp/old.sh",
+                    "padding": 2,
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    cmd = "/abs/dj statusline"
+    on = statusline.toggle(
+        settings_path=settings,
+        marker_path=marker,
+        install_command=cmd,
+    )
+    assert on["enabled"] is True
+    assert on["action"] == "installed"
+    data = json.loads(settings.read_text(encoding="utf-8"))
+    assert data["statusLine"]["command"] == cmd
+
+    off = statusline.toggle(
+        settings_path=settings,
+        marker_path=marker,
+        install_command=cmd,
+    )
+    assert off["enabled"] is False
+    assert off["action"] == "disabled"
+    data = json.loads(settings.read_text(encoding="utf-8"))
+    assert data["statusLine"]["command"] == "bash /tmp/old.sh"
+    assert data["statusLine"]["padding"] == 2
+
+    # Re-enable keeps original previous
+    on2 = statusline.toggle(
+        settings_path=settings,
+        marker_path=marker,
+        install_command=cmd,
+    )
+    assert on2["enabled"] is True
+    data = json.loads(settings.read_text(encoding="utf-8"))
+    assert data["statusLine"]["command"] == cmd
+    mark = json.loads(marker.read_text(encoding="utf-8"))
+    assert mark["previous"]["command"] == "bash /tmp/old.sh"

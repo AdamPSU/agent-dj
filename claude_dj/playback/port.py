@@ -12,6 +12,8 @@ class PlayerState:
     track_id: str | None
     device_id: str | None = None
     context_uri: str | None = None
+    name: str | None = None
+    artists: str | None = None
 
     @property
     def time_remaining_ms(self) -> int | None:
@@ -82,6 +84,8 @@ class FakePlayback:
         progress_ms: int = 0,
         duration_ms: int = 180_000,
         device_id: str | None = "fake-device",
+        name: str | None = None,
+        artists: str | None = None,
     ) -> None:
         """Test helper: simulate Spotify player observation."""
         if track_id is None and not is_playing:
@@ -94,6 +98,8 @@ class FakePlayback:
             track_id=track_id,
             device_id=device_id,
             context_uri=None,
+            name=name,
+            artists=artists,
         )
 
 
@@ -142,6 +148,11 @@ class SpotifyPlayback:
         device = raw.get("device") or {}
         context = raw.get("context") or {}
         track_id = item.get("id")
+        artists = ", ".join(
+            str(a.get("name") or "")
+            for a in (item.get("artists") or [])
+            if isinstance(a, dict)
+        ).strip(", ")
         return PlayerState(
             is_playing=bool(raw.get("is_playing")),
             progress_ms=raw.get("progress_ms"),
@@ -149,4 +160,6 @@ class SpotifyPlayback:
             track_id=str(track_id) if track_id else None,
             device_id=device.get("id"),
             context_uri=context.get("uri"),
+            name=str(item.get("name") or "") or None,
+            artists=artists or None,
         )

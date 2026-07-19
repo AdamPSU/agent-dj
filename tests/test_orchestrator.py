@@ -316,3 +316,35 @@ def test_status_fields(tmp_path) -> None:
     snap = session.status(conn)
     assert snap["indexed"] == 0
     assert snap["now_playing"] is None
+
+
+def test_status_idle_reports_spotify_playback(tmp_path) -> None:
+    conn = db.connect(tmp_path / "c.db")
+    fake = FakePlayback()
+    fake.set_state(
+        track_id="sp:x",
+        is_playing=True,
+        progress_ms=12_000,
+        duration_ms=180_000,
+        name="Baby",
+        artists="Four Tet",
+    )
+    session = orchestrator.Session(playback=fake)
+    snap = session.status(conn)
+    assert snap["mode"] == "idle"
+    assert snap["now_playing"] == {
+        "name": "Baby",
+        "artists": "Four Tet",
+        "progress_ms": 12_000,
+        "duration_ms": 180_000,
+        "spotify_id": "sp:x",
+    }
+
+
+def test_quit_jam_resets_session() -> None:
+    fake = FakePlayback()
+    session = orchestrator.Session(playback=fake)
+    session.mode = "attached"
+    out = session.quit_jam()
+    assert out == {"ok": True, "mode": "idle", "was": "attached"}
+    assert session.mode == "idle"

@@ -71,9 +71,8 @@ def sync_work_visible(syncing: bool, indexed: int, catalog_total: int) -> bool:
 
 
 def should_show_line(payload: dict[str, Any]) -> bool:
-    mode = payload.get("mode")
     np = payload.get("now_playing")
-    playing = mode == "attached" and isinstance(np, dict)
+    playing = isinstance(np, dict) and bool(np.get("spotify_id") or np.get("name"))
     syncing = sync_work_visible(
         bool(payload.get("syncing")),
         int(payload.get("indexed") or 0),
@@ -95,9 +94,8 @@ def format_line(
         return ""
 
     parts: list[str] = []
-    mode = payload.get("mode")
     np = payload.get("now_playing")
-    if mode == "attached" and isinstance(np, dict):
+    if isinstance(np, dict) and (np.get("spotify_id") or np.get("name")):
         artists = str(np.get("artists") or "").strip() or "unknown"
         name = str(np.get("name") or "").strip() or "unknown"
         prog = format_ms(np.get("progress_ms") if np.get("progress_ms") is not None else None)
@@ -194,12 +192,21 @@ def ensure_installed(
     cmd = install_command or resolve_install_command()
     try:
         if is_installed(settings_path=settings_path, marker_path=marker_path):
-            return {"ok": True, "action": "noop"}
+            return {"ok": True, "action": "noop", "enabled": True, "command": cmd}
 
         settings = _read_json(settings_path) or {}
-        previous = settings.get("statusLine")
-        if not isinstance(previous, dict):
-            previous = None
+        current = settings.get("statusLine")
+        if not isinstance(current, dict):
+            current = None
+
+        # Keep original previous across disable→enable cycles.
+        marker_existing = load_marker(marker_path) or {}
+        if marker_existing.get("installed_command"):
+            previous = marker_existing.get("previous")
+            if previous is not None and not isinstance(previous, dict):
+                previous = None
+        else:
+            previous = current
 
         marker = {
             "version": MARKER_VERSION,
@@ -213,13 +220,54 @@ def ensure_installed(
             "command": cmd,
             "refreshInterval": 1,
         }
-        if previous and "padding" in previous:
+        if isinstance(previous, dict) and "padding" in previous:
             new_sl["padding"] = previous["padding"]
         settings["statusLine"] = new_sl
         _write_json(settings_path, settings)
-        return {"ok": True, "action": "installed", "command": cmd}
+        return {"ok": True, "action": "installed", "enabled": True, "command": cmd}
     except OSError as exc:
         return {"ok": False, "error": str(exc)}
+
+
+def uninstall(
+    *,
+    settings_path: Path | None = None,
+    marker_path: Path | None = None,
+) -> dict[str, Any]:
+    """Restore previous Claude Code statusLine (or remove ours). Best-effort."""
+    settings_path = settings_path or CLAUDE_SETTINGS_PATH
+    marker_path = marker_path or STATUSLINE_MARKER
+    try:
+        if not is_installed(settings_path=settings_path, marker_path=marker_path):
+            return {"ok": True, "action": "noop", "enabled": False}
+
+        marker = load_marker(marker_path) or {}
+        previous = marker.get("previous")
+        settings = _read_json(settings_path) or {}
+        if isinstance(previous, dict):
+            settings["statusLine"] = previous
+        else:
+            settings.pop("statusLine", None)
+        _write_json(settings_path, settings)
+        return {"ok": True, "action": "disabled", "enabled": False}
+    except OSError as exc:
+        return {"ok": False, "error": str(exc)}
+
+
+def toggle(
+    *,
+    settings_path: Path | None = None,
+    marker_path: Path | None = None,
+    install_command: str | None = None,
+) -> dict[str, Any]:
+    """Enable if off, disable if on."""
+    if is_installed(settings_path=settings_path, marker_path=marker_path):
+        return uninstall(settings_path=settings_path, marker_path=marker_path)
+    return ensure_installed(
+        settings_path=settings_path,
+        marker_path=marker_path,
+        install_command=install_command,
+    )
 
 
 def fetch_status(*, base_url: str = BASE_URL, timeout: float = STATUS_TIMEOUT_S) -> dict[str, Any] | None:

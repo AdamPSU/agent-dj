@@ -76,12 +76,21 @@ class Session:
                 }
             elif state is not None and state.track_id:
                 now_playing = {
-                    "name": "",
-                    "artists": "",
+                    "name": str(state.name or ""),
+                    "artists": str(state.artists or ""),
                     "progress_ms": state.progress_ms,
                     "duration_ms": state.duration_ms,
                     "spotify_id": state.track_id,
                 }
+        elif state is not None and state.track_id and state.is_playing:
+            # Daemon attached / idle observe: any Spotify playback.
+            now_playing = {
+                "name": str(state.name or ""),
+                "artists": str(state.artists or ""),
+                "progress_ms": state.progress_ms,
+                "duration_ms": state.duration_ms,
+                "spotify_id": state.track_id,
+            }
 
         return {
             "mode": self.mode,
@@ -89,6 +98,13 @@ class Session:
             "catalog_total": db.count_tracks(conn),
             "now_playing": now_playing,
         }
+
+    def quit_jam(self) -> dict[str, Any]:
+        """End recommender session; keep daemon (statusline) alive."""
+        with self._lock:
+            was = self.mode
+            self._reset()
+            return {"ok": True, "mode": self.mode, "was": was}
 
     def play(self, conn) -> dict[str, Any]:
         """Start DJ: resolve session start, mint block, start playback. Idempotent while attached."""

@@ -47,6 +47,32 @@ def pick_device() -> str:
     return "cpu"
 
 
+@contextlib.contextmanager
+def _quiet_model_load():
+    """Hide transformers load-report tables and FutureWarnings during MuQ init."""
+    import logging
+
+    os.environ.setdefault("TRANSFORMERS_VERBOSITY", "error")
+    os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
+    loggers = [
+        logging.getLogger(name)
+        for name in ("transformers", "huggingface_hub", "muq")
+    ]
+    prev_levels = [log.level for log in loggers]
+    for log in loggers:
+        log.setLevel(logging.ERROR)
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            # LOAD REPORT is printed to stdout, not always via logging.
+            with contextlib.redirect_stdout(io.StringIO()):
+                with _quiet_c_stderr():
+                    yield
+    finally:
+        for log, level in zip(loggers, prev_levels, strict=True):
+            log.setLevel(level)
+
+
 @lru_cache(maxsize=1)
 def _load_model():
     """Load MuQ-MuLan once and keep it in memory for later embeds."""
@@ -54,8 +80,7 @@ def _load_model():
 
     device = pick_device()
     # MuQ loads a text tower from a base checkpoint; extra LM-head weights are unused noise.
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", FutureWarning)
+    with _quiet_model_load():
         model = MuQMuLan.from_pretrained("OpenMuQ/MuQ-MuLan-large")
     model = model.to(device).eval()
     return model, device

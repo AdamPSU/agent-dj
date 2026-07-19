@@ -87,8 +87,8 @@ def sync() -> dict:
     return {"ok": True, "syncing": catalog_sync.is_syncing()}
 
 
-@app.post("/play")
-def play() -> dict:
+@app.post("/jam")
+def jam() -> dict:
     """Kick catalog sync, start/resume DJ with virtual-queue playback."""
     catalog_sync.kick()
     _ensure_monitor()
@@ -99,7 +99,7 @@ def play() -> dict:
         finally:
             conn.close()
     except Exception as exc:
-        log.exception("play failed")
+        log.exception("jam failed")
         return {"ok": False, "error": "play_failed", "detail": str(exc)}
 
 
@@ -147,8 +147,10 @@ def select_device(device_id: str) -> dict:
         return {"ok": False, "error": "device_select_failed", "detail": str(exc)}
 
 
-@app.post("/quit")
-async def quit() -> dict:
+@app.post("/kill")
+async def kill() -> dict:
+    """Stop daemon entirely (jam + statusline process). Spotify keeps playing."""
+    _session.quit_jam()
     _shutdown()
     return {"ok": True}
 

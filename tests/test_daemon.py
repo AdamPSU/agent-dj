@@ -5,7 +5,7 @@ from claude_dj.playback import FakePlayback
 from claude_dj.session import Session
 
 
-def test_status_sync_play_contract(monkeypatch) -> None:
+def test_status_sync_jam_contract(monkeypatch) -> None:
     kicks: list[int] = []
     monkeypatch.setattr(daemon_mod.catalog_sync, "kick", lambda: kicks.append(1) or True)
     monkeypatch.setattr(daemon_mod.catalog_sync, "is_syncing", lambda: True)
@@ -26,8 +26,8 @@ def test_status_sync_play_contract(monkeypatch) -> None:
     assert status["syncing"] is True
 
     assert client.post("/sync").json() == {"ok": True, "syncing": True}
-    play_body = client.post("/play").json()
-    assert play_body["ok"] is False
+    jam_body = client.post("/jam").json()
+    assert jam_body["ok"] is False
     assert len(kicks) == 2
 
 
@@ -56,7 +56,7 @@ def test_play_empty_catalog_returns_not_ready(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(daemon_mod, "_session", Session(playback=fake))
     client = TestClient(daemon_mod.app)
 
-    body = client.post("/play").json()
+    body = client.post("/jam").json()
     assert body["ok"] is False
     assert body["error"] == "not_ready"
     assert body["indexed"] == 0
@@ -107,13 +107,17 @@ def test_devices_list_and_select(monkeypatch) -> None:
     assert bad["error"] == "unknown_device"
 
 
-def test_quit_sets_should_exit(monkeypatch) -> None:
+def test_kill_sets_should_exit(monkeypatch) -> None:
     class FakeServer:
         should_exit = False
 
-    fake = FakeServer()
-    monkeypatch.setattr(daemon_mod, "_server", fake)
+    fake_server = FakeServer()
+    session = Session(playback=FakePlayback())
+    session.mode = "attached"
+    monkeypatch.setattr(daemon_mod, "_server", fake_server)
+    monkeypatch.setattr(daemon_mod, "_session", session)
     client = TestClient(daemon_mod.app)
 
-    assert client.post("/quit").json() == {"ok": True}
-    assert fake.should_exit is True
+    assert client.post("/kill").json() == {"ok": True}
+    assert fake_server.should_exit is True
+    assert session.mode == "idle"
