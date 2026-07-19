@@ -28,30 +28,6 @@ def test_install_skill_idempotent(tmp_path: Path, monkeypatch) -> None:
     assert claude_code.install_skill()["action"] == "noop"
 
 
-def test_uninstall_skill_removes_dir(tmp_path: Path, monkeypatch) -> None:
-    skill_dir = tmp_path / "skills" / "dj"
-    skill_path = skill_dir / "SKILL.md"
-    monkeypatch.setattr(claude_code, "DJ_SKILL_DIR", skill_dir)
-    monkeypatch.setattr(claude_code, "DJ_SKILL_PATH", skill_path)
-    claude_code.install_skill()
-    assert skill_path.is_file()
-
-    out = claude_code.uninstall_skill()
-    assert out["ok"] is True
-    assert out["action"] == "removed"
-    assert not skill_dir.exists()
-
-
-def test_uninstall_skill_noop_when_missing(tmp_path: Path, monkeypatch) -> None:
-    skill_dir = tmp_path / "skills" / "dj"
-    skill_path = skill_dir / "SKILL.md"
-    monkeypatch.setattr(claude_code, "DJ_SKILL_DIR", skill_dir)
-    monkeypatch.setattr(claude_code, "DJ_SKILL_PATH", skill_path)
-    out = claude_code.uninstall_skill()
-    assert out["ok"] is True
-    assert out["action"] == "noop"
-
-
 def test_skill_is_installed(tmp_path: Path, monkeypatch) -> None:
     skill_dir = tmp_path / "skills" / "dj"
     skill_path = skill_dir / "SKILL.md"

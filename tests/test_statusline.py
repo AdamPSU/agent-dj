@@ -190,45 +190,6 @@ def test_ensure_installed_wraps_and_is_idempotent(tmp_path: Path) -> None:
     assert again["action"] == "noop"
 
 
-def test_uninstall_restores_previous(tmp_path: Path) -> None:
-    settings = tmp_path / "settings.json"
-    marker = tmp_path / "statusline.json"
-    cmd = "/abs/dj statusline"
-    statusline.ensure_installed(
-        settings_path=settings,
-        marker_path=marker,
-        install_command=cmd,
-    )
-    # simulate previous was set
-    marker.write_text(
-        json.dumps(
-            {
-                "version": 1,
-                "installed_command": cmd,
-                "previous": {"type": "command", "command": "echo hi"},
-            }
-        ),
-        encoding="utf-8",
-    )
-    settings.write_text(
-        json.dumps(
-            {
-                "statusLine": {
-                    "type": "command",
-                    "command": cmd,
-                    "refreshInterval": 1,
-                }
-            }
-        ),
-        encoding="utf-8",
-    )
-    out = statusline.uninstall(settings_path=settings, marker_path=marker)
-    assert out["action"] == "restored"
-    data = json.loads(settings.read_text(encoding="utf-8"))
-    assert data["statusLine"]["command"] == "echo hi"
-    assert not marker.exists()
-
-
 def test_run_appends_dj_under_user(monkeypatch, tmp_path: Path) -> None:
     settings = tmp_path / "settings.json"
     marker = tmp_path / "statusline.json"

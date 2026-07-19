@@ -1,8 +1,7 @@
-"""Install / uninstall the personal Claude Code /dj skill."""
+"""Install the personal Claude Code /dj skill."""
 
 from __future__ import annotations
 
-import shutil
 from importlib import resources
 from pathlib import Path
 from typing import Any
@@ -48,20 +47,5 @@ def install_skill(
             "action": "updated" if existed else "installed",
             "path": str(path),
         }
-    except OSError as exc:
-        return {"ok": False, "error": str(exc)}
-
-
-def uninstall_skill(
-    *,
-    skill_dir: Path | None = None,
-) -> dict[str, Any]:
-    """Remove the personal /dj skill directory if present."""
-    directory = skill_dir or DJ_SKILL_DIR
-    if not directory.exists():
-        return {"ok": True, "action": "noop"}
-    try:
-        shutil.rmtree(directory)
-        return {"ok": True, "action": "removed", "path": str(directory)}
     except OSError as exc:
         return {"ok": False, "error": str(exc)}

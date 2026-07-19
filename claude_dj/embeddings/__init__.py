@@ -4,7 +4,14 @@ from claude_dj.embeddings.muq import (
     EMBED_DIM,
     EmbedError,
     embed_preview,
+    ensure_model_loaded,
     pick_device,
 )
 
-__all__ = ["EMBED_DIM", "EmbedError", "embed_preview", "pick_device"]
+__all__ = [
+    "EMBED_DIM",
+    "EmbedError",
+    "embed_preview",
+    "ensure_model_loaded",
+    "pick_device",
+]

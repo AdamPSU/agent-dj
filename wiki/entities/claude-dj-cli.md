@@ -1,6 +1,6 @@
 ---
-title: dj CLI
-description: Entry point `claude_dj.cli:main` (`pyproject.toml` script `dj`).
+title: claude-dj CLI
+description: Entry point `claude_dj.cli:main` (`pyproject.toml` script `claude-dj`).
 date: '2026-07-18'
 tags:
 - cli
@@ -8,7 +8,7 @@ tags:
 - install
 ---
 
-Entry point `claude_dj.cli:main` (`pyproject.toml` script `dj`).
+Entry point `claude_dj.cli:main` (`pyproject.toml` script `claude-dj`).
 
 ## Install
 
@@ -16,7 +16,7 @@ Entry point `claude_dj.cli:main` (`pyproject.toml` script `dj`).
 curl -fsSL https://raw.githubusercontent.com/AdamPSU/claude-dj-plugin/main/install.sh | bash
 ```
 
-`install.sh` ensures `uv`, runs `uv tool install`, then `dj setup`.
+`install.sh` ensures `uv`, runs `uv tool install`, then `claude-dj setup`.
 
 ## Commands
 
@@ -30,7 +30,6 @@ curl -fsSL https://raw.githubusercontent.com/AdamPSU/claude-dj-plugin/main/insta
 | `device <id>` | auth + daemon → `POST /devices/{id}` |
 | `quit` | `POST /quit` |
 | `statusline` | render DJ statusline row (Claude Code) |
-| `uninstall` | restore statusline, remove skill; `--wipe` deletes `~/.claude-dj` |
 
 Hidden: `__daemon__` runs FastAPI via `claude_dj.daemon.server`.
 

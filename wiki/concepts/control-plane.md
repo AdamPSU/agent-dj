@@ -22,7 +22,6 @@ CLI client + localhost HTTP daemon. Host tooling (setup, statusline, skill) live
 | device | GET `/devices` |
 | device id | POST `/devices/{id}` |
 | quit | POST `/quit` |
-| uninstall | local only |
 
 ```mermaid
 sequenceDiagram

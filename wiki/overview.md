@@ -18,7 +18,7 @@ Package root is **`claude_dj/`** (formerly `backend/`). Branch `algorithm-v1`. G
 
 | Layer | Path / role |
 |-------|-------------|
-| Install | `install.sh` → `uv tool install` → `dj setup` |
+| Install | `install.sh` → `uv tool install` → `claude-dj setup` |
 | CLI | `claude_dj/cli.py` — auth client, spawn daemon, HTTP |
 | Integrate | `claude_dj/integrate/` — setup wizard, statusline, `/dj` skill |
 | Daemon | `claude_dj/daemon/server.py` — FastAPI + monitor |
@@ -31,7 +31,7 @@ Package root is **`claude_dj/`** (formerly `backend/`). Branch `algorithm-v1`. G
 
 ## Commands
 
-`setup` · `play` · `status` · `sync` · `device` · `device <id>` · `quit` · `uninstall` · `statusline`
+`setup` · `play` · `status` · `sync` · `device` · `device <id>` · `quit` · `statusline`
 
 - **`setup`**: client ID → Spotify login → device → statusline → `/dj` skill (questionary TTY)
 - **`play`**: session + daemon + kick sync + mint pair of blocks + Connect
@@ -50,9 +50,9 @@ Package root is **`claude_dj/`** (formerly `backend/`). Branch `algorithm-v1`. G
 ```mermaid
 flowchart LR
   User --> Install["install.sh"]
-  Install --> Setup["dj setup"]
+  Install --> Setup["claude-dj setup"]
   Setup --> Config["config.json"]
-  User --> CLI["dj"]
+  User --> CLI["claude-dj"]
   CLI --> Daemon["FastAPI :8787"]
   Daemon --> Sync["catalog/sync"]
   Daemon --> Sess["session"]

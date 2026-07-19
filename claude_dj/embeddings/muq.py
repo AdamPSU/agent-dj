@@ -61,6 +61,12 @@ def _load_model():
     return model, device
 
 
+def ensure_model_loaded() -> str:
+    """Download (if needed) and load MuQ into memory. Returns device name."""
+    _, device = _load_model()
+    return device
+
+
 def _waveform_from_bytes(data: bytes) -> torch.Tensor:
     """Decode audio bytes to a mono 24 kHz waveform tensor."""
     # In-memory decode works for WAV; Deezer previews are MP3 and need a real path.

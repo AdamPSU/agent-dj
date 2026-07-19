@@ -222,39 +222,6 @@ def ensure_installed(
         return {"ok": False, "error": str(exc)}
 
 
-def uninstall(
-    *,
-    settings_path: Path | None = None,
-    marker_path: Path | None = None,
-) -> dict[str, Any]:
-    """Restore previous statusLine if we still own it."""
-    settings_path = settings_path or CLAUDE_SETTINGS_PATH
-    marker_path = marker_path or STATUSLINE_MARKER
-    marker = load_marker(marker_path)
-    if not marker:
-        return {"ok": True, "action": "noop", "detail": "no marker"}
-
-    settings = _read_json(settings_path) or {}
-    sl = settings.get("statusLine")
-    owned = isinstance(sl, dict) and sl.get("command") == marker.get("installed_command")
-    if owned:
-        previous = marker.get("previous")
-        if isinstance(previous, dict):
-            settings["statusLine"] = previous
-        else:
-            settings.pop("statusLine", None)
-        _write_json(settings_path, settings)
-        action = "restored"
-    else:
-        action = "marker_only"
-
-    try:
-        marker_path.unlink(missing_ok=True)
-    except OSError:
-        pass
-    return {"ok": True, "action": action}
-
-
 def fetch_status(*, base_url: str = BASE_URL, timeout: float = STATUS_TIMEOUT_S) -> dict[str, Any] | None:
     try:
         req = urllib.request.Request(f"{base_url}/status", method="GET")

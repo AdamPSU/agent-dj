@@ -16,10 +16,10 @@ This installs [`uv`](https://docs.astral.sh/uv/) if needed, puts **`dj`** on you
 2. Add a loopback redirect (`http://127.0.0.1/callback` style — login uses an ephemeral local port).
 3. Paste the **Client ID** when setup asks (saved to `~/.claude-dj/config.json`). No shell `export` required.
 
-Optional non-interactive setup:
+Optional flags (still interactive — confirms Spotify + MuQ):
 
 ```sh
-dj setup --client-id <id> --device-id <connect-id> --yes
+dj setup --client-id <id> --device-id <connect-id>
 ```
 
 ## Use
@@ -32,8 +32,6 @@ dj device            # list Connect devices
 dj device <id>       # prefer a device
 dj quit
 dj setup             # re-run wizard (idempotent)
-dj uninstall         # restore statusline, remove /dj skill
-dj uninstall --wipe  # also delete ~/.claude-dj
 ```
 
 In **Claude Code**, prefer shell/command mode for zero model lag:
