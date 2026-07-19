@@ -46,4 +46,11 @@ if command -v claude-dj >/dev/null 2>&1; then
 fi
 
 info "Running setup…"
-exec dj setup "$@"
+# curl|bash leaves stdin as the pipe (not a TTY). Attach setup to the
+# controlling terminal so questionary prompts work.
+if [ -r /dev/tty ] && [ -w /dev/tty ]; then
+  exec dj setup "$@" </dev/tty >/dev/tty 2>&1
+fi
+info "No controlling terminal; run setup yourself:"
+info "  dj setup"
+exit 0
