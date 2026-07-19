@@ -1,20 +1,20 @@
 import math
 import random
 
-from backend.music.embeddings import EMBED_DIM
-from backend.storage import db
-from backend import orchestrator
-from backend.music import recommend
-from backend.music.playback import FakePlayback
+from claude_dj import session as orchestrator
+import claude_dj.session.session as session_mod
+from claude_dj.embeddings import EMBED_DIM
+from claude_dj.playback import FakePlayback
+from claude_dj.catalog import db
 
 
-def _unit(seed: float) -> list[float]:
+def _vec(seed: float) -> list[float]:
     raw = [math.sin(seed + i * 0.17) for i in range(EMBED_DIM)]
     norm = math.sqrt(sum(x * x for x in raw)) or 1.0
     return [x / norm for x in raw]
 
 
-def _fill_catalog(conn, n: int = 50) -> list[int]:
+def _seed_catalog(conn, n: int = 55) -> list[int]:
     ids: list[int] = []
     for i in range(n):
         tid = db.upsert_track(
@@ -23,242 +23,280 @@ def _fill_catalog(conn, n: int = 50) -> list[int]:
             name=f"T{i}",
             artists=f"A{i}",
         )
-        db.upsert_embedding(conn, tid, _unit(i * 0.37))
+        db.upsert_embedding(conn, tid, _vec(i * 0.3))
         ids.append(tid)
     return ids
 
 
-def test_fake_playback_records_block() -> None:
-    port = FakePlayback()
-    tracks = [
-        {"spotify_id": "a", "name": "A", "track_id": 1},
-        {"spotify_id": "b", "name": "B", "track_id": 2},
-    ]
-    port.start_block(tracks)
-    assert port.last_block == tracks
-    assert port.last_uris == ["a", "b"]
-    assert port.get_state() is not None
-    assert port.get_state().track_id == "a"
-
-
-def test_play_not_ready(tmp_path) -> None:
+def test_play_mints_and_starts(tmp_path, monkeypatch) -> None:
     conn = db.connect(tmp_path / "c.db")
-    _fill_catalog(conn, n=10)
-    session = orchestrator.Orchestrator(
-        playback=FakePlayback(),
-        rng=random.Random(0),
+    _seed_catalog(conn)
+    monkeypatch.setattr(
+        session_mod.spotify,
+        "iter_top_tracks",
+        lambda *a, **k: iter([{"spotify_id": "sp:0"}]),
     )
-    result = session.play(conn)
-    assert result["ok"] is False
-    assert result["error"] == "not_ready"
-    assert result["indexed"] == 10
-    assert session.mode == orchestrator.MODE_IDLE
+    monkeypatch.setattr(
+        session_mod.spotify,
+        "iter_recently_played",
+        lambda *a, **k: iter([]),
+    )
+    # Force a tops mode (not recently_played)
+    monkeypatch.setattr(
+        session_mod.random,
+        "choice",
+        lambda seq: "short_term" if seq is session_mod._SEED_MODES else seq[0],
+    )
 
-
-def test_play_starts_block_and_cools_down(tmp_path) -> None:
-    conn = db.connect(tmp_path / "c.db")
-    _fill_catalog(conn, n=50)
     fake = FakePlayback()
-    session = orchestrator.Orchestrator(playback=fake, rng=random.Random(1), now=1_000.0)
-    result = session.play(conn)
-    assert result["ok"] is True
-    assert result["playing"] is True
-    assert result["mode"] == orchestrator.MODE_ATTACHED
-    assert len(result["block"]["tracks"]) == recommend.DEFAULT_N
+    session = orchestrator.Session(playback=fake)
+    out = session.play(conn)
+
+    assert out["ok"] is True
+    assert out.get("resumed") is not True
     assert fake.start_count == 1
-    assert len(fake.last_uris) == recommend.DEFAULT_N
-    assert fake.last_uris == [t["spotify_id"] for t in result["block"]["tracks"]]
-    assert session.expected_id == result["block"]["tracks"][0]["spotify_id"]
-    # only current track cooled at start
-    first_id = result["block"]["tracks"][0]["track_id"]
-    assert first_id in session.cooldown
+    # Pair-mint: two blocks loaded in one start_block.
+    assert len(fake.last_block or []) >= 6
+    assert session.mode == orchestrator.MODE_ATTACHED
+    assert session.focus is not None
+    assert len(session.plan.tracks) >= 6
+    assert out.get("size") == len(session.plan.tracks)
+    assert out.get("seed_mode") == "short_term"
+
+
+def test_play_recently_played_seed_mode(tmp_path, monkeypatch) -> None:
+    conn = db.connect(tmp_path / "c.db")
+    _seed_catalog(conn)
+    monkeypatch.setattr(
+        session_mod.random,
+        "choice",
+        lambda seq: "recently_played" if seq is session_mod._SEED_MODES else seq[0],
+    )
+    monkeypatch.setattr(
+        session_mod.spotify,
+        "iter_recently_played",
+        lambda *a, **k: iter([{"spotify_id": "sp:1"}]),
+    )
+    monkeypatch.setattr(
+        session_mod.spotify,
+        "iter_top_tracks",
+        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("should not call tops")),
+    )
+
+    fake = FakePlayback()
+    session = orchestrator.Session(playback=fake)
+    out = session.play(conn)
+
+    assert out["ok"] is True
+    assert out.get("seed_mode") == "recently_played"
+    assert out.get("source") == "tops"
+    assert session.taste is not None
+
+
+def test_play_seed_failure_still_plays(tmp_path, monkeypatch) -> None:
+    conn = db.connect(tmp_path / "c.db")
+    _seed_catalog(conn)
+
+    def boom(*a, **k):
+        raise RuntimeError("spotify down")
+
+    monkeypatch.setattr(session_mod.spotify, "iter_top_tracks", boom)
+    monkeypatch.setattr(session_mod.spotify, "iter_recently_played", boom)
+
+    fake = FakePlayback()
+    session = orchestrator.Session(playback=fake)
+    out = session.play(conn)
+
+    assert out["ok"] is True
+    assert fake.start_count == 1
+    assert session.mode == orchestrator.MODE_ATTACHED
+    assert session.taste is None
+    assert out.get("source") == "random"
+    assert "seed_error" in out
+    assert "spotify down" in out["seed_error"]
 
 
 def test_play_idempotent_when_attached(tmp_path) -> None:
     conn = db.connect(tmp_path / "c.db")
-    _fill_catalog(conn, n=50)
     fake = FakePlayback()
-    session = orchestrator.Orchestrator(playback=fake, rng=random.Random(2))
-    first = session.play(conn)
-    assert first["ok"]
-    second = session.play(conn)
-    assert second["ok"] is True
-    assert second.get("resumed") is True
+    session = orchestrator.Session(playback=fake)
+    tracks = [
+        {"spotify_id": "a", "track_id": 1},
+        {"spotify_id": "b", "track_id": 2},
+    ]
+    session.plan.replace(tracks)
+    session.mode = orchestrator.MODE_ATTACHED
+    fake.start_block(tracks)
+
+    out = session.play(conn)
+    assert out["ok"] is True
+    assert out.get("resumed") is True
     assert fake.start_count == 1
 
 
-def test_tick_yields_on_foreign_track(tmp_path) -> None:
-    conn = db.connect(tmp_path / "c.db")
-    _fill_catalog(conn, n=50)
+def test_tick_foreign_track_idles_and_requests_quit() -> None:
     fake = FakePlayback()
-    session = orchestrator.Orchestrator(playback=fake, rng=random.Random(3))
-    assert session.play(conn)["ok"]
+    session = orchestrator.Session(playback=fake)
+    tracks = [{"spotify_id": "a", "track_id": 1}]
+    session.plan.replace(tracks)
+    session.mode = orchestrator.MODE_ATTACHED
+    session.focus = [1.0]
+    session.taste = [1.0]
+    session.cooldown = {1: 999.0}
+    fake.start_block(tracks)
     fake.set_state(track_id="totally-foreign", progress_ms=1000)
-    out = session.tick(conn)
-    assert out["event"] == "yielded"
-    assert session.mode == orchestrator.MODE_YIELDED
+
+    out = session.tick(None)
+    assert out["event"] == "foreign"
+    assert out.get("quit") is True
+    assert session.mode == orchestrator.MODE_IDLE
+    assert session.virtual_queue == []
+    assert session.focus is None
+    assert session.taste is None
+    assert session.cooldown == {}
 
 
-def test_tick_advances_within_plan(tmp_path) -> None:
-    conn = db.connect(tmp_path / "c.db")
-    _fill_catalog(conn, n=50)
+def test_tick_advances_within_first_block() -> None:
     fake = FakePlayback()
-    session = orchestrator.Orchestrator(playback=fake, rng=random.Random(4))
-    result = session.play(conn)
-    tracks = result["block"]["tracks"]
-    second = str(tracks[1]["spotify_id"])
-    fake.set_state(track_id=second, progress_ms=0, duration_ms=200_000)
-    out = session.tick(conn)
-    assert out["event"] in {"advanced", "skipped"}
-    assert session.expected_id == second
+    session = orchestrator.Session(playback=fake)
+    # Two blocks of 3: landing on b is still in block 0 → no mint.
+    tracks = [
+        {"spotify_id": "a", "track_id": 1},
+        {"spotify_id": "b", "track_id": 2},
+        {"spotify_id": "c", "track_id": 3},
+        {"spotify_id": "d", "track_id": 4},
+        {"spotify_id": "e", "track_id": 5},
+        {"spotify_id": "f", "track_id": 6},
+    ]
+    session.plan.replace(tracks)
+    session._block_ends = [3, 6]
+    session.mode = orchestrator.MODE_ATTACHED
+    session.focus = [1.0]
+    fake.start_block(tracks)
+    starts = fake.start_count
+    fake.set_state(track_id="b", progress_ms=0, duration_ms=200_000)
+
+    out = session.tick(None)
+    assert out["event"] == "advanced"
+    assert session.expected_id == "b"
+    assert fake.start_count == starts
     assert session.mode == orchestrator.MODE_ATTACHED
 
 
-def test_advance_plays_next(tmp_path) -> None:
+def test_tick_pause_does_not_mint(tmp_path, monkeypatch) -> None:
     conn = db.connect(tmp_path / "c.db")
-    _fill_catalog(conn, n=50)
-    fake = FakePlayback()
-    session = orchestrator.Orchestrator(playback=fake, rng=random.Random(5))
-    first = session.play(conn)
-    assert first["ok"]
-    tracks = first["block"]["tracks"]
-    t0 = tracks[0]["spotify_id"]
-    t1 = tracks[1]["spotify_id"]
-    advanced = session.advance(conn)
-    assert advanced["ok"] is True
-    assert session.expected_id == t1
-    # Force-advance reloads remaining multi-URI plan (not a single-URI play).
-    assert fake.start_count == 2
-    assert fake.last_uris == [t["spotify_id"] for t in tracks[1:]]
-    assert fake.last_uris[0] == t1
-    assert t0 != t1
+    _seed_catalog(conn)
+    monkeypatch.setattr(
+        session_mod.spotify,
+        "iter_top_tracks",
+        lambda *a, **k: iter([]),
+    )
+    monkeypatch.setattr(
+        session_mod.spotify,
+        "iter_recently_played",
+        lambda *a, **k: iter([]),
+    )
 
-
-def test_tick_does_not_force_play_when_block_has_next(tmp_path) -> None:
-    """Near end of a mid-block track: rely on multi-URI advance, don't re-command."""
-    conn = db.connect(tmp_path / "c.db")
-    _fill_catalog(conn, n=50)
     fake = FakePlayback()
-    session = orchestrator.Orchestrator(playback=fake, rng=random.Random(8))
-    result = session.play(conn)
-    assert result["ok"]
+    session = orchestrator.Session(playback=fake)
+    assert session.play(conn)["ok"] is True
     starts = fake.start_count
+    n = len(session.plan.tracks)
+
+    cur = session.plan.current()
+    assert cur is not None
     fake.set_state(
-        track_id=result["block"]["tracks"][0]["spotify_id"],
-        progress_ms=176_000,
+        track_id=str(cur["spotify_id"]),
+        is_playing=False,
+        progress_ms=40_000,
         duration_ms=180_000,
     )
+
     out = session.tick(conn)
-    assert out["event"] == "ok"
-    assert fake.start_count == starts
-
-
-def test_advance_without_play_fails(tmp_path) -> None:
-    conn = db.connect(tmp_path / "c.db")
-    _fill_catalog(conn, n=50)
-    session = orchestrator.Orchestrator(playback=FakePlayback(), rng=random.Random(0))
-    result = session.advance(conn)
-    assert result["ok"] is False
-    assert result["error"] == "not_playing"
-
-
-def test_play_after_yield_reattaches(tmp_path) -> None:
-    conn = db.connect(tmp_path / "c.db")
-    _fill_catalog(conn, n=50)
-    fake = FakePlayback()
-    session = orchestrator.Orchestrator(playback=fake, rng=random.Random(6))
-    session.play(conn)
-    fake.set_state(track_id="foreign")
-    session.tick(conn)
-    assert session.mode == orchestrator.MODE_YIELDED
-    again = session.play(conn)
-    assert again["ok"] is True
-    assert session.mode == orchestrator.MODE_ATTACHED
-    assert again.get("resumed") is False
-
-
-def test_status_snapshot_fields(tmp_path) -> None:
-    conn = db.connect(tmp_path / "c.db")
-    _fill_catalog(conn, n=50)
-    session = orchestrator.Orchestrator(playback=FakePlayback(), rng=random.Random(7))
-    snap = session.status_snapshot(conn)
-    assert snap["mode"] == orchestrator.MODE_IDLE
-    assert snap["recommend_ready"] is True
-    session.play(conn)
-    snap2 = session.status_snapshot(conn)
-    assert snap2["mode"] == orchestrator.MODE_ATTACHED
-    assert snap2["virtual_queue"]
-    assert snap2["now_playing"] is not None
-
-
-def test_cold_play_uses_top_tracks_fetcher(tmp_path) -> None:
-    conn = db.connect(tmp_path / "c.db")
-    ids = _fill_catalog(conn, n=50)
-    calls: list[str] = []
-
-    def fake_tops(time_range: str):
-        calls.append(time_range)
-        return [{"spotify_id": "sp:0"}]
-
-    session = orchestrator.Orchestrator(
-        playback=FakePlayback(),
-        rng=random.Random(0),
-        top_tracks_fetcher=fake_tops,
-    )
-    result = session.play(conn)
-    assert result["ok"] is True
-    assert len(calls) == 1
-    assert calls[0] in recommend.TOP_TIME_RANGES
-    # cold seed embedding is sp:0's vector (session_start captures working seed)
-    seed = db.get_embedding(conn, ids[0])
-    assert seed is not None
-    assert all(
-        abs(a - b) < 1e-5
-        for a, b in zip(session.session_start_embed, seed, strict=True)
-    )
-
-
-def test_cold_play_fetcher_error_falls_back(tmp_path) -> None:
-    conn = db.connect(tmp_path / "c.db")
-    _fill_catalog(conn, n=50)
-
-    def boom(_time_range: str):
-        raise RuntimeError("spotify down")
-
-    session = orchestrator.Orchestrator(
-        playback=FakePlayback(),
-        rng=random.Random(1),
-        top_tracks_fetcher=boom,
-    )
-    result = session.play(conn)
-    assert result["ok"] is True
-
-
-def test_next_block_requests_short_term_recency(tmp_path) -> None:
-    conn = db.connect(tmp_path / "c.db")
-    _fill_catalog(conn, n=50)
-    calls: list[str] = []
-
-    def fake_tops(time_range: str):
-        calls.append(time_range)
-        return [{"spotify_id": "sp:1"}]
-
-    fake = FakePlayback()
-    session = orchestrator.Orchestrator(
-        playback=fake,
-        rng=random.Random(2),
-        n=3,
-        top_tracks_fetcher=fake_tops,
-    )
-    first = session.play(conn)
-    assert first["ok"]
-    cold_calls = list(calls)
-    # Drain queue without minting by advancing until last track, then advance again.
-    while session._has_next():
-        session.advance(conn)
-    before = len(calls)
-    out = session.advance(conn)
     assert out["ok"] is True
-    assert len(calls) > before
-    assert calls[-1] == "short_term"
-    assert cold_calls  # cold also fetched once
+    assert out.get("event") == "paused"
+    assert fake.start_count == starts
+    assert len(session.plan.tracks) == n
+
+
+def test_tick_entering_second_block_mints_one_more(tmp_path, monkeypatch) -> None:
+    """When playback enters the last loaded block, mint exactly one new block."""
+    conn = db.connect(tmp_path / "c.db")
+    _seed_catalog(conn, n=80)
+    monkeypatch.setattr(
+        session_mod.spotify,
+        "iter_top_tracks",
+        lambda *a, **k: iter([]),
+    )
+    monkeypatch.setattr(
+        session_mod.spotify,
+        "iter_recently_played",
+        lambda *a, **k: iter([]),
+    )
+
+    fake = FakePlayback()
+    session = orchestrator.Session(playback=fake)
+    assert session.play(conn)["ok"] is True
+    assert len(session._block_ends) == 2
+    n_before = len(session.plan.tracks)
+    # First track of the second block.
+    second_start = session._block_ends[0]
+    head_of_second = session.plan.tracks[second_start]
+    starts = fake.start_count
+    fake.set_state(
+        track_id=str(head_of_second["spotify_id"]),
+        progress_ms=0,
+        duration_ms=180_000,
+    )
+
+    out = session.tick(conn)
+    assert out["ok"] is True
+    assert out.get("event") == "minted"
+    assert fake.start_count > starts
+    assert len(session._block_ends) == 3
+    assert len(session.plan.tracks) > n_before
+    assert session.expected_id == str(head_of_second["spotify_id"])
+    assert session.mode == orchestrator.MODE_ATTACHED
+
+
+def test_tick_same_in_first_block_does_not_mint(tmp_path, monkeypatch) -> None:
+    conn = db.connect(tmp_path / "c.db")
+    _seed_catalog(conn)
+    monkeypatch.setattr(
+        session_mod.spotify,
+        "iter_top_tracks",
+        lambda *a, **k: iter([]),
+    )
+    monkeypatch.setattr(
+        session_mod.spotify,
+        "iter_recently_played",
+        lambda *a, **k: iter([]),
+    )
+
+    fake = FakePlayback()
+    session = orchestrator.Session(playback=fake)
+    assert session.play(conn)["ok"] is True
+    starts = fake.start_count
+    n = len(session.plan.tracks)
+    cur = session.plan.current()
+    assert cur is not None
+    fake.set_state(
+        track_id=str(cur["spotify_id"]),
+        progress_ms=10_000,
+        duration_ms=180_000,
+    )
+
+    out = session.tick(conn)
+    assert out["ok"] is True
+    assert out.get("event") == "ok"
+    assert fake.start_count == starts
+    assert len(session.plan.tracks) == n
+    assert len(session._block_ends) == 2
+
+
+def test_status_fields(tmp_path) -> None:
+    conn = db.connect(tmp_path / "c.db")
+    session = orchestrator.Session(playback=FakePlayback())
+    snap = session.status(conn)
+    assert snap["indexed"] == 0
+    assert snap["now_playing"] is None

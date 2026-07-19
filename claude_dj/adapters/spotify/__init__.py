@@ -11,16 +11,34 @@ import urllib.request
 import webbrowser
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
-from backend.config import (
+from claude_dj.config import (
     APP_DIR,
     DEVICE_PATH,
     SPOTIFY_API_BASE,
     SPOTIFY_AUTHORIZE_URL,
-    SPOTIFY_CLIENT_ID,
     SPOTIFY_SCOPES,
     SPOTIFY_TOKEN_PATH,
     SPOTIFY_TOKEN_URL,
+    ConfigError,
+    resolve_spotify_client_id,
 )
+
+# Optional test override. Production code uses resolve_spotify_client_id().
+SPOTIFY_CLIENT_ID = ""
+
+
+def _client_id() -> str:
+    """Spotify app client id: module override (tests), else env/config."""
+    if SPOTIFY_CLIENT_ID:
+        return SPOTIFY_CLIENT_ID
+    return resolve_spotify_client_id()
+
+def _legacy_token_path():
+    return APP_DIR / "spotify-token.json"
+
+
+def _legacy_device_path():
+    return APP_DIR / "spotify-device.json"
 
 
 def pkce_pair() -> tuple[str, str]:
@@ -40,11 +58,15 @@ def free_port() -> int:
 
 def authorize_url(state: str, challenge: str, redirect_uri: str) -> str:
     """Build the Spotify consent page URL the user opens in their browser."""
-    if not SPOTIFY_CLIENT_ID:
-        raise SystemExit("SPOTIFY_CLIENT_ID is not set")
+    try:
+        client_id = _client_id()
+    except ConfigError as exc:
+        raise SystemExit(str(exc)) from exc
+    if not client_id:
+        raise SystemExit("Spotify client ID not configured; run: claude-dj setup")
     query = urllib.parse.urlencode(
         {
-            "client_id": SPOTIFY_CLIENT_ID,
+            "client_id": client_id,
             "response_type": "code",
             "redirect_uri": redirect_uri,
             "scope": SPOTIFY_SCOPES,
@@ -76,7 +98,7 @@ def exchange_code(code: str, verifier: str, redirect_uri: str) -> dict:
             "grant_type": "authorization_code",
             "code": code,
             "redirect_uri": redirect_uri,
-            "client_id": SPOTIFY_CLIENT_ID,
+            "client_id": _client_id(),
             "code_verifier": verifier,
         }
     )
@@ -89,7 +111,7 @@ def refresh_tokens(refresh_token: str) -> dict:
         {
             "grant_type": "refresh_token",
             "refresh_token": refresh_token,
-            "client_id": SPOTIFY_CLIENT_ID,
+            "client_id": _client_id(),
         }
     )
     if "refresh_token" not in payload:
@@ -109,26 +131,90 @@ def _normalize_tokens(payload: dict) -> dict:
     }
 
 
+def _migrate_legacy_token_file() -> None:
+    """Move ~/.claude-dj/spotify-token.json → spotify_tokens.json once."""
+    legacy = _legacy_token_path()
+    if SPOTIFY_TOKEN_PATH.exists() or not legacy.exists():
+        return
+    try:
+        raw = json.loads(legacy.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return
+    if not isinstance(raw, dict) or not raw.get("access_token"):
+        return
+    # Legacy shape used expires_in instead of absolute expires_at.
+    if "expires_at" not in raw and "expires_in" in raw:
+        try:
+            raw = {
+                **raw,
+                "expires_at": time.time() + float(raw["expires_in"]) - 30,
+            }
+        except (TypeError, ValueError):
+            return
+    APP_DIR.mkdir(parents=True, exist_ok=True)
+    SPOTIFY_TOKEN_PATH.write_text(json.dumps(raw), encoding="utf-8")
+    SPOTIFY_TOKEN_PATH.chmod(0o600)
+    try:
+        legacy.unlink()
+    except OSError:
+        pass
+
+
+def _migrate_legacy_device_file() -> None:
+    """Move ~/.claude-dj/spotify-device.json → device.json once."""
+    legacy = _legacy_device_path()
+    if DEVICE_PATH.exists() or not legacy.exists():
+        return
+    try:
+        raw = json.loads(legacy.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return
+    if not isinstance(raw, dict):
+        return
+    device_id = raw.get("device_id") or raw.get("id")
+    if not device_id:
+        return
+    APP_DIR.mkdir(parents=True, exist_ok=True)
+    DEVICE_PATH.write_text(json.dumps({"device_id": str(device_id)}), encoding="utf-8")
+    DEVICE_PATH.chmod(0o600)
+    try:
+        legacy.unlink()
+    except OSError:
+        pass
+
+
 def save_tokens(tokens: dict) -> None:
     APP_DIR.mkdir(parents=True, exist_ok=True)
     SPOTIFY_TOKEN_PATH.write_text(json.dumps(tokens), encoding="utf-8")
     SPOTIFY_TOKEN_PATH.chmod(0o600)
+    legacy = _legacy_token_path()
+    if legacy.exists():
+        try:
+            legacy.unlink()
+        except OSError:
+            pass
 
 
 def load_tokens() -> dict | None:
+    _migrate_legacy_token_file()
     if not SPOTIFY_TOKEN_PATH.exists():
         return None
     return json.loads(SPOTIFY_TOKEN_PATH.read_text(encoding="utf-8"))
 
 
 def tokens_missing() -> bool:
+    _migrate_legacy_token_file()
     return not SPOTIFY_TOKEN_PATH.exists()
 
 
 def clear_tokens() -> None:
     """Forget saved Spotify credentials so the next login starts clean."""
-    if SPOTIFY_TOKEN_PATH.exists():
-        SPOTIFY_TOKEN_PATH.unlink()
+    for path in (SPOTIFY_TOKEN_PATH, _legacy_token_path()):
+        if path.exists():
+            try:
+                path.unlink()
+            except OSError:
+                pass
 
 
 def get_access_token() -> str:
@@ -137,11 +223,10 @@ def get_access_token() -> str:
     if tokens is None:
         raise RuntimeError("not logged in; run: claude-dj play")
     if time.time() >= float(tokens["expires_at"]):
-        if not SPOTIFY_CLIENT_ID:
-            raise RuntimeError(
-                "Spotify session expired and SPOTIFY_CLIENT_ID is not set; "
-                "export SPOTIFY_CLIENT_ID and run: claude-dj play"
-            )
+        try:
+            _client_id()
+        except ConfigError as exc:
+            raise RuntimeError(str(exc)) from exc
         try:
             tokens = refresh_tokens(tokens["refresh_token"])
         except urllib.error.HTTPError as exc:
@@ -151,8 +236,24 @@ def get_access_token() -> str:
     return tokens["access_token"]
 
 
+def required_scopes() -> frozenset[str]:
+    """Scopes we must have on the stored token (from SPOTIFY_SCOPES)."""
+    return frozenset(SPOTIFY_SCOPES.split())
+
+
+def token_has_required_scopes(tokens: dict | None = None) -> bool:
+    """True when the saved token grants every scope in SPOTIFY_SCOPES."""
+    tokens = tokens if tokens is not None else load_tokens()
+    if not tokens:
+        return False
+    granted = frozenset((tokens.get("scope") or "").split())
+    return required_scopes().issubset(granted)
+
+
 def session_is_valid() -> bool:
-    """True when we can refresh if needed and Spotify accepts the access token."""
+    """True when token has required scopes and Spotify accepts the access token."""
+    if not token_has_required_scopes():
+        return False
     try:
         get_me()
         return True
@@ -161,10 +262,14 @@ def session_is_valid() -> bool:
 
 
 def ensure_session() -> None:
-    """Make sure Spotify auth works: refresh if possible, otherwise open browser login."""
+    """Make sure Spotify auth works: refresh if possible, otherwise open browser login.
+
+    Missing scopes (e.g. after we add user-top-read) force a full re-login;
+    refresh alone cannot grant new scopes.
+    """
     if session_is_valid():
         return
-    # Stale/invalid tokens block a clean re-login.
+    # Stale/invalid/underscoped tokens block a clean re-login.
     clear_tokens()
     login()
 
@@ -280,6 +385,7 @@ def transfer_playback(device_id: str, *, play: bool = False) -> None:
 
 
 def load_preferred_device_id() -> str | None:
+    _migrate_legacy_device_file()
     if not DEVICE_PATH.exists():
         return None
     try:
@@ -294,11 +400,21 @@ def save_preferred_device_id(device_id: str) -> None:
     APP_DIR.mkdir(parents=True, exist_ok=True)
     DEVICE_PATH.write_text(json.dumps({"device_id": device_id}), encoding="utf-8")
     DEVICE_PATH.chmod(0o600)
+    legacy = _legacy_device_path()
+    if legacy.exists():
+        try:
+            legacy.unlink()
+        except OSError:
+            pass
 
 
 def clear_preferred_device_id() -> None:
-    if DEVICE_PATH.exists():
-        DEVICE_PATH.unlink()
+    for path in (DEVICE_PATH, _legacy_device_path()):
+        if path.exists():
+            try:
+                path.unlink()
+            except OSError:
+                pass
 
 
 def _iter_pages(path: str, params: dict | None = None):
@@ -315,6 +431,19 @@ def _iter_pages(path: str, params: dict | None = None):
         data = api_get(next_url)
 
 
+def _simplify_track(track: dict) -> dict | None:
+    if not isinstance(track, dict) or not track.get("id"):
+        return None
+    artists = ", ".join(
+        a.get("name") or "" for a in (track.get("artists") or []) if a.get("name")
+    )
+    return {
+        "spotify_id": track["id"],
+        "name": track.get("name") or "",
+        "artists": artists,
+    }
+
+
 def iter_top_tracks(time_range: str = "short_term", *, limit: int = 50):
     """Yield simplified top-track rows (affinity list) in rank order."""
     if time_range not in {"short_term", "medium_term", "long_term"}:
@@ -325,16 +454,27 @@ def iter_top_tracks(time_range: str = "short_term", *, limit: int = 50):
         {"time_range": time_range, "limit": capped},
     )
     for track in data.get("items") or []:
-        if not isinstance(track, dict) or not track.get("id"):
+        row = _simplify_track(track)
+        if row is not None:
+            yield row
+
+
+def iter_recently_played(*, limit: int = 50):
+    """Yield simplified recently-played rows, most recent first (deduped by id)."""
+    capped = max(1, min(int(limit), 50))
+    data = api_get("/me/player/recently-played", {"limit": capped})
+    seen: set[str] = set()
+    for item in data.get("items") or []:
+        if not isinstance(item, dict):
             continue
-        artists = ", ".join(
-            a.get("name") or "" for a in (track.get("artists") or []) if a.get("name")
-        )
-        yield {
-            "spotify_id": track["id"],
-            "name": track.get("name") or "",
-            "artists": artists,
-        }
+        row = _simplify_track(item.get("track") or {})
+        if row is None:
+            continue
+        sid = row["spotify_id"]
+        if sid in seen:
+            continue
+        seen.add(sid)
+        yield row
 
 
 def iter_owned_playlists():

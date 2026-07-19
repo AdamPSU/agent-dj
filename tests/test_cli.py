@@ -1,7 +1,7 @@
 import json
 from unittest.mock import patch
 
-from backend import cli
+from claude_dj import cli
 
 
 def test_status_prints_json(capsys) -> None:
@@ -14,11 +14,13 @@ def test_status_prints_json(capsys) -> None:
 def test_play_ensures_login_and_daemon_then_posts(capsys) -> None:
     payload = {"ok": True, "playing": True, "block": {"n": 5, "tracks": []}}
     with (
+        patch("claude_dj.integrate.statusline.ensure_installed") as install,
         patch.object(cli, "ensure_spotify_login") as login,
         patch.object(cli, "ensure_daemon") as ensure,
         patch.object(cli, "request", return_value=payload) as request,
     ):
         cli.main(["play"])
+    install.assert_called_once_with()
     login.assert_called_once_with()
     ensure.assert_called_once_with()
     request.assert_called_once_with("POST", "/play")
@@ -73,9 +75,30 @@ def test_device_select_posts_id(capsys) -> None:
 
 
 def test_ensure_spotify_login_uses_ensure_session() -> None:
-    with patch("backend.adapters.spotify.ensure_session") as ensure_session:
+    with patch("claude_dj.adapters.spotify.ensure_session") as ensure_session:
         cli.ensure_spotify_login()
     ensure_session.assert_called_once_with()
+
+
+def test_setup_dispatches_to_wizard(capsys) -> None:
+    payload = {"ok": True, "spotify_client_id": "x"}
+    with patch("claude_dj.integrate.setup.run", return_value=payload) as run:
+        cli.main(["setup", "--client-id", "x", "--yes", "--skip-device", "--skip-claude"])
+    run.assert_called_once()
+    kwargs = run.call_args.kwargs
+    assert kwargs["client_id"] == "x"
+    assert kwargs["yes"] is True
+    assert kwargs["skip_device"] is True
+    assert kwargs["skip_claude"] is True
+    assert json.loads(capsys.readouterr().out) == payload
+
+
+def test_uninstall_dispatches(capsys) -> None:
+    payload = {"ok": True, "wiped": False}
+    with patch("claude_dj.integrate.setup.uninstall", return_value=payload) as un:
+        cli.main(["uninstall"])
+    un.assert_called_once_with(wipe=False, yes=False)
+    assert json.loads(capsys.readouterr().out) == payload
 
 
 def test_ensure_daemon_noop_when_reachable() -> None:

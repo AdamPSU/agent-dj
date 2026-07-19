@@ -1,29 +1,25 @@
+import claude_dj.daemon.server as daemon_mod
 from fastapi.testclient import TestClient
 
-from backend import daemon
-from backend.orchestrator import Orchestrator
-from backend.music.playback import FakePlayback
+from claude_dj.playback import FakePlayback
+from claude_dj.session import Session
 
 
 def test_status_sync_play_contract(monkeypatch) -> None:
     kicks: list[int] = []
-    monkeypatch.setattr(daemon.catalog_sync, "kick", lambda: kicks.append(1) or True)
-    monkeypatch.setattr(daemon.catalog_sync, "is_syncing", lambda: True)
-    monkeypatch.setattr(daemon.catalog_sync, "current_track", lambda: None)
+    monkeypatch.setattr(daemon_mod.catalog_sync, "kick", lambda: kicks.append(1) or True)
+    monkeypatch.setattr(daemon_mod.catalog_sync, "is_syncing", lambda: True)
+    monkeypatch.setattr(daemon_mod.catalog_sync, "current_track", lambda: None)
     fake = FakePlayback()
-    orch = Orchestrator(playback=fake)
-    monkeypatch.setattr(daemon, "_orchestrator", orch)
-    monkeypatch.setattr(daemon, "_ensure_monitor", lambda: None)
-
-    class Boom:
-        def close(self):
-            pass
+    session = Session(playback=fake)
+    monkeypatch.setattr(daemon_mod, "_session", session)
+    monkeypatch.setattr(daemon_mod, "_ensure_monitor", lambda: None)
 
     def bad_connect():
         raise RuntimeError("no db in unit test")
 
-    monkeypatch.setattr(daemon.db, "connect", bad_connect)
-    client = TestClient(daemon.app)
+    monkeypatch.setattr(daemon_mod.db, "connect", bad_connect)
+    client = TestClient(daemon_mod.app)
 
     status = client.get("/status").json()
     assert status["ok"] is True
@@ -35,52 +31,38 @@ def test_status_sync_play_contract(monkeypatch) -> None:
     assert len(kicks) == 2
 
 
-def test_play_uses_orchestrator(monkeypatch, tmp_path) -> None:
-    from backend.storage import db
-    from backend.music.embeddings import EMBED_DIM
-    import math
-
-    def unit(seed: float) -> list[float]:
-        raw = [math.sin(seed + i * 0.17) for i in range(EMBED_DIM)]
-        norm = math.sqrt(sum(x * x for x in raw)) or 1.0
-        return [x / norm for x in raw]
+def test_play_empty_catalog_returns_empty_block(monkeypatch, tmp_path) -> None:
+    from claude_dj.catalog import db
 
     path = tmp_path / "catalog.db"
     conn = db.connect(path)
-    for i in range(50):
-        tid = db.upsert_track(conn, spotify_id=f"sp:{i}", name=f"T{i}", artists="A")
-        db.upsert_embedding(conn, tid, unit(i * 0.3))
     conn.close()
 
-    monkeypatch.setattr(daemon.catalog_sync, "kick", lambda: True)
-    monkeypatch.setattr(daemon, "_ensure_monitor", lambda: None)
+    monkeypatch.setattr(daemon_mod.catalog_sync, "kick", lambda: True)
+    monkeypatch.setattr(daemon_mod, "_ensure_monitor", lambda: None)
     real_connect = db.connect
-    monkeypatch.setattr(daemon.db, "connect", lambda: real_connect(path))
+    monkeypatch.setattr(daemon_mod.db, "connect", lambda: real_connect(path))
+    monkeypatch.setattr(
+        "claude_dj.session.session.spotify.iter_top_tracks",
+        lambda *a, **k: iter([]),
+    )
+    monkeypatch.setattr(
+        "claude_dj.session.session.spotify.iter_recently_played",
+        lambda *a, **k: iter([]),
+    )
 
     fake = FakePlayback()
-    monkeypatch.setattr(daemon, "_orchestrator", Orchestrator(playback=fake))
-    client = TestClient(daemon.app)
+    monkeypatch.setattr(daemon_mod, "_session", Session(playback=fake))
+    client = TestClient(daemon_mod.app)
 
     body = client.post("/play").json()
-    assert body["ok"] is True
-    assert body["playing"] is True
-    assert body["mode"] == "attached"
-    assert len(body["block"]["tracks"]) == 5
-    assert fake.start_count == 1
-
-    again = client.post("/play").json()
-    assert again["ok"] is True
-    assert again.get("resumed") is True
-    assert fake.start_count == 1
-
-    status = client.get("/status").json()
-    assert status["mode"] == "attached"
-    assert status["recommend_ready"] is True
-    assert status["indexed"] == 50
+    assert body["ok"] is False
+    assert body["error"] == "empty_block"
+    assert fake.start_count == 0
 
 
 def test_devices_list_and_select(monkeypatch) -> None:
-    from backend.adapters import spotify as spotify_mod
+    from claude_dj.adapters import spotify as spotify_mod
 
     devices = [
         {
@@ -104,7 +86,7 @@ def test_devices_list_and_select(monkeypatch) -> None:
         "transfer_playback",
         lambda did, play=False: transferred.append(did),
     )
-    client = TestClient(daemon.app)
+    client = TestClient(daemon_mod.app)
 
     listed = client.get("/devices").json()
     assert listed["ok"] is True
@@ -126,8 +108,8 @@ def test_quit_sets_should_exit(monkeypatch) -> None:
         should_exit = False
 
     fake = FakeServer()
-    monkeypatch.setattr(daemon, "_server", fake)
-    client = TestClient(daemon.app)
+    monkeypatch.setattr(daemon_mod, "_server", fake)
+    client = TestClient(daemon_mod.app)
 
     assert client.post("/quit").json() == {"ok": True}
     assert fake.should_exit is True

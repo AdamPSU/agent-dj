@@ -1,24 +1,28 @@
+"""Focus + Taste recommender unit tests."""
+
+from __future__ import annotations
+
 import math
 import random
 
-from backend.music.embeddings import EMBED_DIM
-from backend.storage import db
-from backend.music import recommend
+from claude_dj import recommend
+from claude_dj.embeddings import EMBED_DIM
+from claude_dj.catalog import db
 
 
-def _unit(seed: float) -> list[float]:
+def _vec(seed: float) -> list[float]:
     raw = [math.sin(seed + i * 0.17) for i in range(EMBED_DIM)]
     norm = math.sqrt(sum(x * x for x in raw)) or 1.0
     return [x / norm for x in raw]
 
 
-def _axis(i: int, value: float = 1.0) -> list[float]:
+def _axis(i: int) -> list[float]:
     v = [0.0] * EMBED_DIM
-    v[i % EMBED_DIM] = value
+    v[i % EMBED_DIM] = 1.0
     return v
 
 
-def _fill_catalog(conn, n: int = 50, seed_base: float = 0.0) -> list[int]:
+def _seed_catalog(conn, n: int = 55, *, base: float = 0.0) -> list[int]:
     ids: list[int] = []
     for i in range(n):
         tid = db.upsert_track(
@@ -27,213 +31,198 @@ def _fill_catalog(conn, n: int = 50, seed_base: float = 0.0) -> list[int]:
             name=f"T{i}",
             artists=f"A{i}",
         )
-        db.upsert_embedding(conn, tid, _unit(seed_base + i * 0.37))
+        db.upsert_embedding(conn, tid, _vec(base + i * 0.3))
         ids.append(tid)
     return ids
 
 
-def test_next_block_seed_blend_and_normalize() -> None:
-    last = [1.0] + [0.0] * (EMBED_DIM - 1)
-    recency = [0.0, 1.0] + [0.0] * (EMBED_DIM - 2)
-    out = recommend.next_block_seed(last, recency)
+def test_l2_normalize_unit_length() -> None:
+    out = recommend.l2_normalize([3.0, 4.0] + [0.0] * (EMBED_DIM - 2))
     assert abs(math.sqrt(sum(x * x for x in out)) - 1.0) < 1e-6
-    # 0.7 last + 0.3 recency → first axis larger than second before/after L2
-    assert out[0] > out[1] > 0
 
 
-def test_next_block_seed_without_recency_is_last() -> None:
-    last = _unit(1.0)
-    out = recommend.next_block_seed(last, None)
-    assert out == list(last)
-
-
-def test_next_block_seed_degenerate_fallback() -> None:
-    z = [0.0] * EMBED_DIM
-    last = _unit(1.0)
-    out = recommend.next_block_seed(last, z)
-    assert all(abs(a - b) < 1e-6 for a, b in zip(out, last, strict=True))
-
-
-def test_sample_seed_from_top_empty(tmp_path) -> None:
-    conn = db.connect(tmp_path / "c.db")
-    _fill_catalog(conn, n=50)
-    assert (
-        recommend.sample_seed_from_top(conn, [], rng=random.Random(0)) is None
-    )
-
-
-def test_sample_seed_from_top_skips_missing(tmp_path) -> None:
-    conn = db.connect(tmp_path / "c.db")
-    ids = _fill_catalog(conn, n=50)
-    # only sp:3 is in catalog among tops
-    tops = [{"spotify_id": "missing"}, {"spotify_id": "sp:3"}, {"spotify_id": "also-missing"}]
-    emb = recommend.sample_seed_from_top(conn, tops, rng=random.Random(0))
-    assert emb is not None
-    expected = db.get_embedding(conn, ids[3])
-    assert expected is not None
-    assert all(abs(a - b) < 1e-5 for a, b in zip(emb, expected, strict=True))
-
-
-def test_sample_seed_from_top_prefers_higher_rank(tmp_path) -> None:
-    conn = db.connect(tmp_path / "c.db")
-    ids = _fill_catalog(conn, n=50)
-    tops = [{"spotify_id": f"sp:{i}"} for i in range(10)]
-    counts: dict[int, int] = {i: 0 for i in range(10)}
+def test_softmax_sample_prefers_high_score() -> None:
+    items = ["a", "b", "c"]
+    scores = [0.0, 10.0, 0.0]
     rng = random.Random(0)
-    for _ in range(300):
-        emb = recommend.sample_seed_from_top(conn, tops, tau=0.15, rng=rng)
-        assert emb is not None
-        # match embedding to track
-        for i in range(10):
-            e = db.get_embedding(conn, ids[i])
-            if e and all(abs(a - b) < 1e-5 for a, b in zip(emb, e, strict=True)):
-                counts[i] += 1
-                break
-    assert counts[0] > counts[9]
-
-
-def test_apply_cooldown() -> None:
-    cool: dict[int, float] = {}
-    recommend.apply_cooldown(cool, [1, 2], now=100.0)
-    assert cool == {1: 100.0, 2: 100.0}
-
-
-def test_softmax_sample_prefers_nearer() -> None:
-    rng = random.Random(0)
-    candidates = [
-        {"id": 1, "distance": 0.01},
-        {"id": 2, "distance": 2.0},
-        {"id": 3, "distance": 2.0},
+    picks = [
+        recommend.softmax_sample(items, scores, tau=0.15, rng=rng) for _ in range(40)
     ]
-    counts = {1: 0, 2: 0, 3: 0}
-    for _ in range(200):
-        pick = recommend.softmax_sample(candidates, tau=0.15, rng=rng)
-        counts[int(pick["id"])] += 1
-    assert counts[1] > counts[2] + counts[3]
+    assert picks.count("b") >= 30
 
 
-def test_recommend_not_ready(tmp_path) -> None:
+def test_block_returns_full_size_unique(tmp_path) -> None:
     conn = db.connect(tmp_path / "c.db")
-    _fill_catalog(conn, n=10)
-    result = recommend.recommend_block(conn, n=3, rng=random.Random(0))
-    assert result["ok"] is False
-    assert result["error"] == "not_ready"
-    assert result["indexed"] == 10
-
-
-def test_recommend_invalid_n(tmp_path) -> None:
-    conn = db.connect(tmp_path / "c.db")
-    _fill_catalog(conn, n=50)
-    for n in (2, 6):
-        result = recommend.recommend_block(conn, n=n, rng=random.Random(0))
-        assert result["ok"] is False
-        assert result["error"] == "invalid_n"
-
-
-def test_recommend_full_block_unique(tmp_path) -> None:
-    conn = db.connect(tmp_path / "c.db")
-    _fill_catalog(conn, n=50)
-    result = recommend.recommend_block(conn, n=5, rng=random.Random(1))
-    assert result["ok"] is True
-    assert result["n"] == 5
-    assert len(result["tracks"]) == 5
-    ids = [t["track_id"] for t in result["tracks"]]
-    assert len(set(ids)) == 5
-    assert result["session_start_embed"] is not None
-    assert result["last_embed"] is not None
-    for t in result["tracks"]:
-        assert "spotify_id" in t
-        assert "name" in t
-        assert "artists" in t
-        assert "distance" in t
-
-
-def test_recommend_cooldown_excludes(tmp_path) -> None:
-    conn = db.connect(tmp_path / "c.db")
-    # Cluster: many near origin axis-0, one far on axis-1
-    ids = []
-    for i in range(50):
-        tid = db.upsert_track(conn, spotify_id=f"sp:{i}", name=f"T{i}", artists="A")
-        if i < 49:
-            v = _axis(0, 1.0)
-            # slight perturbation so they are not identical for uniqueness of rows
-            v = list(v)
-            v[2] = 0.01 * i
-            norm = math.sqrt(sum(x * x for x in v)) or 1.0
-            v = [x / norm for x in v]
-        else:
-            v = _axis(1, 1.0)
-        db.upsert_embedding(conn, tid, v)
-        ids.append(tid)
-
-    seed = db.get_embedding(conn, ids[0])
-    assert seed is not None
-    # Ban almost everything near the seed
-    now = 1_000_000.0
-    cooldown = {tid: now for tid in ids[:48]}
+    _seed_catalog(conn, n=55)
     result = recommend.recommend_block(
         conn,
-        n=3,
-        seed_embed=seed,
-        session_start_embed=seed,
+        focus=_vec(0.0),
+        size=5,
+        rng=random.Random(0),
+    )
+    assert len(result.tracks) == 5
+    assert result.size == 5
+    ids = [t["track_id"] for t in result.tracks]
+    assert len(set(ids)) == 5
+    for t in result.tracks:
+        assert "spotify_id" in t
+        assert "track_id" in t
+
+
+def test_respects_cooldown(tmp_path) -> None:
+    conn = db.connect(tmp_path / "c.db")
+    ids = _seed_catalog(conn, n=55)
+    cooled = ids[0]
+    cooldown = {cooled: 9_999_999_999.0}
+    result = recommend.recommend_block(
+        conn,
+        focus=db.get_embedding(conn, cooled),
+        size=5,
+        cooldown=cooldown,
+        now=1_000.0,
+        rng=random.Random(1),
+    )
+    assert cooled not in {t["track_id"] for t in result.tracks}
+
+
+def test_empty_neighborhood_ends_block_early(tmp_path) -> None:
+    """When nothing is eligible, return what we have (possibly empty)."""
+    conn = db.connect(tmp_path / "c.db")
+    ids = _seed_catalog(conn, n=55)
+    now = 1_000.0
+    cooldown = {tid: now + 10_000 for tid in ids}
+    result = recommend.recommend_block(
+        conn,
+        focus=_vec(0.0),
+        size=5,
         cooldown=cooldown,
         now=now,
         rng=random.Random(0),
-        neighbor_k=50,
     )
-    assert result["ok"] is False
-    assert result["error"] == "insufficient_eligible"
+    assert result.tracks == []
+    assert result.size == 0
 
 
-def test_recommend_cooldown_expires(tmp_path) -> None:
+def test_focus_moves_after_block(tmp_path) -> None:
     conn = db.connect(tmp_path / "c.db")
-    ids = _fill_catalog(conn, n=50)
-    seed = db.get_embedding(conn, ids[0])
-    assert seed is not None
-    now = 10_000.0
-    cooldown = {ids[1]: now - (3 * 3600 + 1)}
+    _seed_catalog(conn, n=55)
+    focus_in = _vec(0.0)
     result = recommend.recommend_block(
         conn,
-        n=3,
-        seed_embed=seed,
-        session_start_embed=seed,
-        cooldown=cooldown,
-        now=now,
-        rng=random.Random(2),
+        focus=focus_in,
+        size=5,
+        rng=random.Random(0),
     )
-    assert result["ok"] is True
-    # expired cooldown must not hard-fail
-    assert len(result["tracks"]) == 3
+    assert result.focus != focus_in
+    assert abs(math.sqrt(sum(x * x for x in result.focus)) - 1.0) < 1e-5
 
 
-def test_recommend_cold_start_deterministic_with_rng(tmp_path) -> None:
+def test_taste_biases_toward_taste_cluster(tmp_path) -> None:
     conn = db.connect(tmp_path / "c.db")
-    ids = _fill_catalog(conn, n=50)
-    r1 = recommend.recommend_block(conn, n=3, rng=random.Random(42))
-    r2 = recommend.recommend_block(conn, n=3, rng=random.Random(42))
-    assert r1["ok"] and r2["ok"]
-    assert [t["track_id"] for t in r1["tracks"]] == [t["track_id"] for t in r2["tracks"]]
-    # session start should match an indexed embedding
-    start = r1["session_start_embed"]
-    assert any(
-        all(abs(a - b) < 1e-5 for a, b in zip(start, db.get_embedding(conn, tid), strict=True))
-        for tid in ids
-        if db.get_embedding(conn, tid) is not None
+    b_ids = []
+    for i in range(30):
+        tid = db.upsert_track(conn, spotify_id=f"a:{i}", name=f"A{i}", artists="A")
+        v = _axis(0)
+        v[2] = 0.01 * i
+        db.upsert_embedding(conn, tid, recommend.l2_normalize(v))
+    for i in range(30):
+        tid = db.upsert_track(conn, spotify_id=f"b:{i}", name=f"B{i}", artists="B")
+        v = _axis(1)
+        v[3] = 0.01 * i
+        db.upsert_embedding(conn, tid, recommend.l2_normalize(v))
+        b_ids.append(tid)
+
+    focus = recommend.l2_normalize(_axis(0))
+    taste = recommend.l2_normalize(_axis(1))
+    b_set = set(b_ids)
+
+    with_t = recommend.recommend_block(
+        conn, focus=focus, taste=taste, size=5, rng=random.Random(0)
+    )
+    without = recommend.recommend_block(
+        conn, focus=focus, taste=None, size=5, rng=random.Random(0)
+    )
+    b_with = sum(1 for t in with_t.tracks if t["track_id"] in b_set)
+    b_without = sum(1 for t in without.tracks if t["track_id"] in b_set)
+    assert b_with >= b_without
+
+
+def test_advance_focus_without_taste_stays_near() -> None:
+    f = _vec(1.0)
+    out = recommend.advance_focus(f, None, rng=random.Random(0), noise=0.01)
+    dot = sum(a * b for a, b in zip(recommend.l2_normalize(f), out))
+    assert dot > 0.99
+
+
+def test_advance_focus_with_taste_moves_toward_t() -> None:
+    f = _axis(0)
+    t = _axis(1)
+    out = recommend.advance_focus(f, t, rng=random.Random(0), delta=0.5, noise=0.0)
+
+    def dist(a, b):
+        return math.sqrt(sum((x - y) ** 2 for x, y in zip(a, b)))
+
+    assert dist(out, recommend.l2_normalize(t)) < dist(
+        recommend.l2_normalize(f), recommend.l2_normalize(t)
     )
 
 
-def test_next_block_seed_used_by_caller(tmp_path) -> None:
+def test_apply_cooldown_sets_expiry() -> None:
+    cd: dict[int, float] = {}
+    recommend.apply_cooldown(cd, [1, 2], now=1000.0, seconds=3600)
+    assert cd[1] == 4600.0
+    assert cd[2] == 4600.0
+
+
+def test_sample_seed_from_tops_softmax_not_always_first(tmp_path) -> None:
     conn = db.connect(tmp_path / "c.db")
-    _fill_catalog(conn, n=50)
-    first = recommend.recommend_block(conn, n=3, rng=random.Random(7))
-    assert first["ok"]
-    recency = first["session_start_embed"]
-    seed = recommend.next_block_seed(first["last_embed"], recency)
-    second = recommend.recommend_block(
+    for i in range(10):
+        tid = db.upsert_track(conn, spotify_id=f"top:{i}", name=f"T{i}", artists="A")
+        db.upsert_embedding(conn, tid, _vec(i))
+    top_rows = [{"spotify_id": f"top:{i}"} for i in range(10)]
+    picks: set[str] = set()
+    for seed in range(30):
+        emb = recommend.sample_seed_from_tops(
+            conn, top_rows, tau=0.5, rng=random.Random(seed)
+        )
+        assert emb is not None
+        hits = db.similar_tracks(conn, emb, limit=1)
+        picks.add(hits[0]["spotify_id"])
+    assert len(picks) >= 3
+
+
+def test_sample_seed_from_tops_empty_intersection(tmp_path) -> None:
+    conn = db.connect(tmp_path / "c.db")
+    _seed_catalog(conn, n=5)
+    emb = recommend.sample_seed_from_tops(
+        conn, [{"spotify_id": "missing"}], rng=random.Random(0)
+    )
+    assert emb is None
+
+
+def test_resolve_session_start_with_tops(tmp_path) -> None:
+    conn = db.connect(tmp_path / "c.db")
+    _seed_catalog(conn, n=55)
+    tid = db.upsert_track(conn, spotify_id="hit", name="Hit", artists="H")
+    db.upsert_embedding(conn, tid, _axis(0))
+    start = recommend.resolve_session_start(
         conn,
-        n=3,
-        seed_embed=seed,
-        session_start_embed=first["session_start_embed"],
-        rng=random.Random(8),
+        top_rows=[{"spotify_id": "hit"}, {"spotify_id": "nope"}],
+        rng=random.Random(0),
     )
-    assert second["ok"]
+    assert start.taste is not None
+    assert start.focus is not None
+    assert start.source == "tops"
+
+
+def test_resolve_session_start_fallback_random(tmp_path) -> None:
+    conn = db.connect(tmp_path / "c.db")
+    _seed_catalog(conn, n=55)
+    start = recommend.resolve_session_start(
+        conn,
+        top_rows=[{"spotify_id": "not-in-catalog"}],
+        rng=random.Random(0),
+    )
+    assert start.taste is None
+    assert start.focus is not None
+    assert start.source == "random"

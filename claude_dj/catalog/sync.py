@@ -1,10 +1,10 @@
 import threading
 from datetime import datetime, timezone
 
-from backend.adapters import deezer, spotify
-from backend.adapters.deezer import DeezerError
-from backend.music.embeddings import EmbedError, embed_preview
-from backend.storage import db
+from claude_dj.adapters import deezer, spotify
+from claude_dj.adapters.deezer import DeezerError
+from claude_dj.embeddings import EmbedError, embed_preview
+from claude_dj.catalog import db
 
 _lock = threading.Lock()
 _syncing = False

@@ -8,6 +8,7 @@ dependencies = [
   "fastapi>=0.115.0",
   "librosa>=0.11.0",
   "muq @ git+https://github.com/tencent-ailab/MuQ.git",
+  "questionary>=2.0.0",
   "soundfile>=0.13.1",
   "sqlite-vec>=0.1.9",
   "torch>=2.8.0",
@@ -15,7 +16,7 @@ dependencies = [
 ]
 
 [project.scripts]
-claude-dj = "backend.cli:main"
+claude-dj = "claude_dj.cli:main"
 
 [dependency-groups]
 dev = [
@@ -31,7 +32,10 @@ build-backend = "hatchling.build"
 allow-direct-references = true
 
 [tool.hatch.build.targets.wheel]
-packages = ["backend"]
+packages = ["claude_dj"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"claude_dj/integrate/templates" = "claude_dj/integrate/templates"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

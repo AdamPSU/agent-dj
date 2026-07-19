@@ -107,7 +107,7 @@ class SpotifyPlayback:
 
     def start_block(self, tracks: list[dict[str, Any]]) -> None:
         """Load the full block so Connect skip advances within the plan."""
-        from backend.adapters import spotify
+        from claude_dj.adapters import spotify
 
         self.last_block = list(tracks)
         self.start_count += 1
@@ -125,7 +125,7 @@ class SpotifyPlayback:
         spotify.start_playback_uris(uris, device_id=target)
 
     def play_uri(self, spotify_id: str, *, device_id: str | None = None) -> None:
-        from backend.adapters import spotify
+        from claude_dj.adapters import spotify
 
         uri = f"spotify:track:{spotify_id}"
         self.last_uris = [spotify_id]
@@ -133,7 +133,7 @@ class SpotifyPlayback:
         spotify.start_playback_uris([uri], device_id=target)
 
     def get_state(self) -> PlayerState | None:
-        from backend.adapters import spotify
+        from claude_dj.adapters import spotify
 
         raw = spotify.get_playback_state()
         if not raw:

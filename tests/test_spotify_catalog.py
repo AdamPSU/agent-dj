@@ -1,6 +1,6 @@
 from unittest.mock import patch
 
-from backend.adapters import spotify
+from claude_dj.adapters import spotify
 
 
 def test_iter_owned_playlists_filters_owner(monkeypatch) -> None:

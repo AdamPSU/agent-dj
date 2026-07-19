@@ -4,8 +4,8 @@ from pathlib import Path
 
 import sqlite_vec
 
-from backend.music.embeddings import EMBED_DIM
-from backend.config import APP_DIR, DB_PATH
+from claude_dj.embeddings import EMBED_DIM
+from claude_dj.config import APP_DIR, DB_PATH
 
 STATUSES = frozenset({"pending", "indexed", "skipped", "retry"})
 
@@ -264,6 +264,12 @@ def list_indexed_track_ids(conn: sqlite3.Connection) -> list[int]:
 def count_indexed(conn: sqlite3.Connection) -> int:
     """How many tracks are indexed with an embedding."""
     return len(list_indexed_track_ids(conn))
+
+
+def count_tracks(conn: sqlite3.Connection) -> int:
+    """How many track rows exist in the catalog (all statuses)."""
+    row = conn.execute("SELECT COUNT(*) AS n FROM tracks").fetchone()
+    return int(row["n"])
 
 
 def get_playlist_by_spotify_id(conn: sqlite3.Connection, spotify_id: str) -> dict | None:

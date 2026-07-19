@@ -3,7 +3,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from backend.adapters import deezer
+from claude_dj.adapters import deezer
 
 
 def test_normalize_isrc() -> None:

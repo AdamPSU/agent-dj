@@ -1,5 +1,5 @@
-from backend import sync
-from backend.storage import db
+from claude_dj.catalog import sync
+from claude_dj.catalog import db
 
 
 def test_kick_is_single_flight(monkeypatch) -> None:

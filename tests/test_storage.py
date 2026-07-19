@@ -1,7 +1,7 @@
 import math
 
-from backend.music.embeddings import EMBED_DIM
-from backend.storage import db
+from claude_dj.embeddings import EMBED_DIM
+from claude_dj.catalog import db
 
 
 def _vec(seed: float) -> list[float]:
