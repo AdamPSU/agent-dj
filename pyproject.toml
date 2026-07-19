@@ -34,8 +34,5 @@ allow-direct-references = true
 [tool.hatch.build.targets.wheel]
 packages = ["claude_dj"]
 
-[tool.hatch.build.targets.wheel.force-include]
-"claude_dj/integrate/templates" = "claude_dj/integrate/templates"
-
 [tool.pytest.ini_options]
 testpaths = ["tests"]
