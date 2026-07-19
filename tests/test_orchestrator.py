@@ -25,6 +25,8 @@ def _seed_catalog(conn, n: int = 55) -> list[int]:
         )
         db.upsert_embedding(conn, tid, _vec(i * 0.3))
         ids.append(tid)
+    pid = db.upsert_playlist(conn, spotify_id="pl:test", name="Test")
+    db.set_playlist_tracks(conn, pid, [(tid, i, None) for i, tid in enumerate(ids)])
     return ids
 
 
@@ -62,6 +64,13 @@ def test_play_mints_and_starts(tmp_path, monkeypatch) -> None:
     assert len(session.plan.tracks) >= 6
     assert out.get("size") == len(session.plan.tracks)
     assert out.get("seed_mode") == "short_term"
+    # Each minted block is mono-playlist.
+    start = 0
+    for end in session._block_ends:
+        chunk = session.plan.tracks[start:end]
+        start = end
+        pids = {t.get("playlist_id") for t in chunk}
+        assert len(pids) == 1 and None not in pids
 
 
 def test_play_recently_played_seed_mode(tmp_path, monkeypatch) -> None:
@@ -129,6 +138,13 @@ def test_play_waits_until_ready_threshold(tmp_path, monkeypatch) -> None:
     # Cross threshold without a second play() call path: seed one more, play again.
     tid = db.upsert_track(conn, spotify_id="sp:29", name="T29", artists="A29")
     db.upsert_embedding(conn, tid, _vec(29 * 0.3))
+    pl = conn.execute("SELECT id FROM playlists LIMIT 1").fetchone()
+    assert pl is not None
+    conn.execute(
+        "INSERT INTO playlist_tracks (playlist_id, track_id, position, added_at) VALUES (?, ?, ?, ?)",
+        (int(pl["id"]), tid, 29, None),
+    )
+    conn.commit()
     out2 = session.play(conn)
     assert out2["ok"] is True
     assert out2.get("waiting") is not True

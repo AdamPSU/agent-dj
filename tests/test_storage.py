@@ -143,3 +143,44 @@ def test_list_indexed_track_ids_and_count(tmp_path) -> None:
     assert db.count_embed_remaining(conn) == 1
     db.set_status(conn, c, "skipped")
     assert db.count_embed_remaining(conn) == 0
+
+
+def test_list_playlists_for_track(tmp_path) -> None:
+    conn = db.connect(tmp_path / "catalog.db")
+    p1 = db.upsert_playlist(conn, spotify_id="pl:1", name="One")
+    p2 = db.upsert_playlist(conn, spotify_id="pl:2", name="Two")
+    t = db.upsert_track(conn, spotify_id="sp:t", name="T", artists="A")
+    db.set_playlist_tracks(conn, p1, [(t, 0, None)])
+    # second playlist membership without wiping p1
+    conn.execute(
+        "INSERT INTO playlist_tracks (playlist_id, track_id, position, added_at) VALUES (?, ?, ?, ?)",
+        (p2, t, 0, None),
+    )
+    conn.commit()
+    pls = {int(r["id"]) for r in db.list_playlists_for_track(conn, t)}
+    assert pls == {p1, p2}
+    assert db.list_playlists_for_track(conn, 99999) == []
+
+
+def test_similar_tracks_scoped_to_playlist(tmp_path) -> None:
+    conn = db.connect(tmp_path / "catalog.db")
+    p1 = db.upsert_playlist(conn, spotify_id="pl:1", name="A")
+    p2 = db.upsert_playlist(conn, spotify_id="pl:2", name="B")
+    ids_p1: list[int] = []
+    ids_p2: list[int] = []
+    for i in range(5):
+        tid = db.upsert_track(conn, spotify_id=f"a{i}", name=f"A{i}", artists="x")
+        db.upsert_embedding(conn, tid, _vec(0.1 + i * 0.01))
+        ids_p1.append(tid)
+    for i in range(5):
+        tid = db.upsert_track(conn, spotify_id=f"b{i}", name=f"B{i}", artists="x")
+        db.upsert_embedding(conn, tid, _vec(9.0 + i * 0.01))
+        ids_p2.append(tid)
+    db.set_playlist_tracks(conn, p1, [(t, i, None) for i, t in enumerate(ids_p1)])
+    db.set_playlist_tracks(conn, p2, [(t, i, None) for i, t in enumerate(ids_p2)])
+    hits = db.similar_tracks(conn, _vec(0.1), limit=10, playlist_id=p1)
+    assert hits
+    assert all(int(h["id"]) in ids_p1 for h in hits)
+    hits2 = db.similar_tracks(conn, _vec(0.1), limit=10, playlist_id=p2)
+    assert hits2
+    assert all(int(h["id"]) in ids_p2 for h in hits2)

@@ -33,7 +33,32 @@ def _seed_catalog(conn, n: int = 55, *, base: float = 0.0) -> list[int]:
         )
         db.upsert_embedding(conn, tid, _vec(base + i * 0.3))
         ids.append(tid)
+    pid = db.upsert_playlist(conn, spotify_id="pl:test", name="Test")
+    db.set_playlist_tracks(conn, pid, [(tid, i, None) for i, tid in enumerate(ids)])
     return ids
+
+
+def _seed_two_playlists(conn):
+    """P1 near _vec(0..); P2 near _vec(100..)."""
+    p1 = db.upsert_playlist(conn, spotify_id="pl:1", name="P1")
+    p2 = db.upsert_playlist(conn, spotify_id="pl:2", name="P2")
+    m1: list[tuple[int, int, None]] = []
+    m2: list[tuple[int, int, None]] = []
+    ids1: list[int] = []
+    ids2: list[int] = []
+    for i in range(10):
+        tid = db.upsert_track(conn, spotify_id=f"sp:{i}", name=f"T{i}", artists="A")
+        db.upsert_embedding(conn, tid, _vec(i * 0.3))
+        m1.append((tid, i, None))
+        ids1.append(tid)
+    for i in range(10, 20):
+        tid = db.upsert_track(conn, spotify_id=f"sp:{i}", name=f"T{i}", artists="A")
+        db.upsert_embedding(conn, tid, _vec(100.0 + (i - 10) * 0.3))
+        m2.append((tid, i - 10, None))
+        ids2.append(tid)
+    db.set_playlist_tracks(conn, p1, m1)
+    db.set_playlist_tracks(conn, p2, m2)
+    return p1, p2, ids1, ids2
 
 
 def test_l2_normalize_unit_length() -> None:
@@ -119,18 +144,27 @@ def test_focus_moves_after_block(tmp_path) -> None:
 
 def test_taste_biases_toward_taste_cluster(tmp_path) -> None:
     conn = db.connect(tmp_path / "c.db")
+    # One playlist so lock doesn't isolate clusters from each other.
+    pid = db.upsert_playlist(conn, spotify_id="pl:mix", name="Mix")
+    members: list[tuple[int, int, None]] = []
     b_ids = []
+    n = 0
     for i in range(30):
         tid = db.upsert_track(conn, spotify_id=f"a:{i}", name=f"A{i}", artists="A")
         v = _axis(0)
         v[2] = 0.01 * i
         db.upsert_embedding(conn, tid, recommend.l2_normalize(v))
+        members.append((tid, n, None))
+        n += 1
     for i in range(30):
         tid = db.upsert_track(conn, spotify_id=f"b:{i}", name=f"B{i}", artists="B")
         v = _axis(1)
         v[3] = 0.01 * i
         db.upsert_embedding(conn, tid, recommend.l2_normalize(v))
         b_ids.append(tid)
+        members.append((tid, n, None))
+        n += 1
+    db.set_playlist_tracks(conn, pid, members)
 
     focus = recommend.l2_normalize(_axis(0))
     taste = recommend.l2_normalize(_axis(1))
@@ -145,6 +179,73 @@ def test_taste_biases_toward_taste_cluster(tmp_path) -> None:
     b_with = sum(1 for t in with_t.tracks if t["track_id"] in b_set)
     b_without = sum(1 for t in without.tracks if t["track_id"] in b_set)
     assert b_with >= b_without
+
+
+def test_block_single_playlist(tmp_path) -> None:
+    conn = db.connect(tmp_path / "c.db")
+    p1, p2, ids1, ids2 = _seed_two_playlists(conn)
+    block = recommend.recommend_block(
+        conn, focus=_vec(0.0), size=5, rng=random.Random(0)
+    )
+    assert block.size == 5
+    assert block.playlist_id in {p1, p2}
+    allowed = set(ids1 if block.playlist_id == p1 else ids2)
+    assert {t["track_id"] for t in block.tracks} <= allowed
+    assert all(t.get("playlist_id") == block.playlist_id for t in block.tracks)
+
+
+def test_short_playlist_block(tmp_path) -> None:
+    conn = db.connect(tmp_path / "c.db")
+    p = db.upsert_playlist(conn, spotify_id="pl:s", name="Small")
+    ids = []
+    for i in range(2):
+        tid = db.upsert_track(conn, spotify_id=f"s{i}", name=f"S{i}", artists="A")
+        db.upsert_embedding(conn, tid, _vec(float(i)))
+        ids.append(tid)
+    db.set_playlist_tracks(conn, p, [(t, i, None) for i, t in enumerate(ids)])
+    block = recommend.recommend_block(
+        conn, focus=_vec(0.0), size=5, rng=random.Random(0)
+    )
+    assert block.playlist_id == p
+    assert 1 <= block.size <= 2
+    assert {t["track_id"] for t in block.tracks} <= set(ids)
+
+
+def test_soft_switch_prefers_other_playlist(tmp_path) -> None:
+    conn = db.connect(tmp_path / "c.db")
+    p1, p2, _ids1, _ids2 = _seed_two_playlists(conn)
+    block = recommend.recommend_block(
+        conn,
+        focus=_vec(100.0),
+        size=5,
+        previous_playlist_id=p1,
+        rng=random.Random(0),
+    )
+    assert block.playlist_id == p2
+
+
+def test_multi_membership_does_not_split_block(tmp_path) -> None:
+    conn = db.connect(tmp_path / "c.db")
+    p1 = db.upsert_playlist(conn, spotify_id="pl:1", name="P1")
+    p2 = db.upsert_playlist(conn, spotify_id="pl:2", name="P2")
+    shared = []
+    for i in range(6):
+        tid = db.upsert_track(conn, spotify_id=f"sh{i}", name=f"S{i}", artists="A")
+        db.upsert_embedding(conn, tid, _vec(i * 0.2))
+        shared.append(tid)
+    only2 = db.upsert_track(conn, spotify_id="only2", name="O", artists="A")
+    db.upsert_embedding(conn, only2, _vec(50.0))
+    db.set_playlist_tracks(conn, p1, [(t, i, None) for i, t in enumerate(shared)])
+    db.set_playlist_tracks(
+        conn, p2, [(t, i, None) for i, t in enumerate(shared + [only2])]
+    )
+    block = recommend.recommend_block(
+        conn, focus=_vec(0.0), size=5, rng=random.Random(1)
+    )
+    assert block.playlist_id is not None
+    for t in block.tracks:
+        pls = {int(r["id"]) for r in db.list_playlists_for_track(conn, t["track_id"])}
+        assert block.playlist_id in pls
 
 
 def test_advance_focus_without_taste_stays_near() -> None:

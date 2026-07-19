@@ -31,6 +31,7 @@ class Block:
     tracks: list[dict[str, Any]]
     focus: list[float]
     size: int
+    playlist_id: int | None = None
 
 
 @dataclass(frozen=True)
@@ -102,14 +103,67 @@ def _active_cooldown(cooldown: dict[int, float] | None, now: float) -> set[int]:
     return {int(tid) for tid, exp in cooldown.items() if float(exp) > now}
 
 
-def _track_payload(row: dict[str, Any]) -> dict[str, Any]:
-    return {
+def _track_payload(
+    row: dict[str, Any], *, playlist_id: int | None = None
+) -> dict[str, Any]:
+    out: dict[str, Any] = {
         "track_id": int(row["id"]),
         "spotify_id": str(row["spotify_id"]),
         "name": row.get("name"),
         "artists": row.get("artists"),
         "duration_ms": row.get("duration_ms"),
     }
+    if playlist_id is not None:
+        out["playlist_id"] = int(playlist_id)
+    return out
+
+
+def _lock_playlist(
+    conn,
+    *,
+    focus: Sequence[float],
+    cooled: set[int],
+    neighbor_k: int,
+    previous_playlist_id: int | None,
+) -> int | None:
+    """Pick one playlist from the best global neighbor (soft-avoid previous)."""
+    neighbors = db.similar_tracks(conn, list(focus), limit=neighbor_k)
+    # Ordered candidates: first occurrence wins (probe distance order, then playlist id).
+    ordered: list[int] = []
+    seen: set[int] = set()
+    for row in neighbors:
+        tid = int(row["id"])
+        if tid in cooled:
+            continue
+        if db.get_embedding(conn, tid) is None:
+            continue
+        for pl in db.list_playlists_for_track(conn, tid):
+            pid = int(pl["id"])
+            if pid in seen:
+                continue
+            ok = False
+            for m in db.similar_tracks(
+                conn, list(focus), limit=neighbor_k, playlist_id=pid
+            ):
+                mid = int(m["id"])
+                if mid in cooled:
+                    continue
+                if db.get_embedding(conn, mid) is None:
+                    continue
+                ok = True
+                break
+            if not ok:
+                continue
+            seen.add(pid)
+            ordered.append(pid)
+
+    if not ordered:
+        return None
+    if previous_playlist_id is not None:
+        for pid in ordered:
+            if pid != int(previous_playlist_id):
+                return pid
+    return ordered[0]
 
 
 def recommend_block(
@@ -125,8 +179,9 @@ def recommend_block(
     tau: float = DEFAULT_TAU,
     w_taste: float = W_TASTE,
     focus_nudge: float = FOCUS_NUDGE,
+    previous_playlist_id: int | None = None,
 ) -> Block:
-    """Mint a continuous block by walking focus. Empty neighborhood ends the block early."""
+    """Mint a block locked to one playlist. Empty neighborhood ends early."""
     rng = rng or random.Random()
     now_ts = time.time() if now is None else float(now)
     cooled = _active_cooldown(cooldown, now_ts)
@@ -138,12 +193,24 @@ def recommend_block(
         else None
     )
 
+    locked = _lock_playlist(
+        conn,
+        focus=f,
+        cooled=cooled,
+        neighbor_k=neighbor_k,
+        previous_playlist_id=previous_playlist_id,
+    )
+    if locked is None:
+        return Block(tracks=[], focus=f, size=0, playlist_id=None)
+
     tracks: list[dict[str, Any]] = []
     in_block: set[int] = set()
     alpha = float(focus_nudge)
 
     for _ in range(size):
-        neighbors = db.similar_tracks(conn, f, limit=neighbor_k)
+        neighbors = db.similar_tracks(
+            conn, f, limit=neighbor_k, playlist_id=locked
+        )
         eligible: list[dict[str, Any]] = []
         embeds: list[list[float]] = []
         for row in neighbors:
@@ -172,11 +239,11 @@ def recommend_block(
         row = eligible[pick_i]
         emb = embeds[pick_i]
         tid = int(row["id"])
-        tracks.append(_track_payload(row))
+        tracks.append(_track_payload(row, playlist_id=locked))
         in_block.add(tid)
         f = l2_normalize([(1.0 - alpha) * a + alpha * b for a, b in zip(f, emb)])
 
-    return Block(tracks=tracks, focus=f, size=len(tracks))
+    return Block(tracks=tracks, focus=f, size=len(tracks), playlist_id=locked)
 
 
 def advance_focus(

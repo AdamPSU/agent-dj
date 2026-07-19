@@ -346,30 +346,77 @@ def delete_orphan_tracks(conn: sqlite3.Connection) -> int:
     return len(rows)
 
 
+def list_playlists_for_track(conn: sqlite3.Connection, track_id: int) -> list[dict]:
+    """Playlists that include this track (may be empty for orphans)."""
+    rows = conn.execute(
+        """
+        SELECT p.*
+        FROM playlists AS p
+        INNER JOIN playlist_tracks AS pt ON pt.playlist_id = p.id
+        WHERE pt.track_id = ?
+        ORDER BY p.id
+        """,
+        (int(track_id),),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
 def similar_tracks(
     conn: sqlite3.Connection,
     vector: list[float],
     *,
     limit: int = 10,
     exclude_track_id: int | None = None,
+    playlist_id: int | None = None,
 ) -> list[dict]:
-    """Find tracks whose embeddings are closest to the given vector."""
+    """Find tracks whose embeddings are closest to the given vector.
+
+    When playlist_id is set, only members of that playlist are returned.
+    """
     blob = serialize_f32(vector)
     fetch_k = limit + 1 if exclude_track_id is not None else limit
-    rows = conn.execute(
-        """
-        SELECT
-            t.*,
-            e.distance
-        FROM track_embeddings AS e
-        JOIN tracks AS t ON t.id = e.track_id
-        WHERE e.embedding MATCH ?
-          AND k = ?
-        ORDER BY e.distance
-        """,
-        (blob, fetch_k),
-    ).fetchall()
-    results = [dict(row) for row in rows]
+    if playlist_id is None:
+        rows = conn.execute(
+            """
+            SELECT
+                t.*,
+                e.distance
+            FROM track_embeddings AS e
+            JOIN tracks AS t ON t.id = e.track_id
+            WHERE e.embedding MATCH ?
+              AND k = ?
+            ORDER BY e.distance
+            """,
+            (blob, fetch_k),
+        ).fetchall()
+        results = [dict(row) for row in rows]
+    else:
+        # Over-fetch globally then filter: sqlite-vec MATCH + JOIN can be flaky.
+        member_ids = {
+            int(r["track_id"])
+            for r in conn.execute(
+                "SELECT track_id FROM playlist_tracks WHERE playlist_id = ?",
+                (int(playlist_id),),
+            ).fetchall()
+        }
+        if not member_ids:
+            return []
+        # Pull a wide neighborhood then keep members (pool may be large).
+        wide_k = max(fetch_k * 20, 200)
+        rows = conn.execute(
+            """
+            SELECT
+                t.*,
+                e.distance
+            FROM track_embeddings AS e
+            JOIN tracks AS t ON t.id = e.track_id
+            WHERE e.embedding MATCH ?
+              AND k = ?
+            ORDER BY e.distance
+            """,
+            (blob, wide_k),
+        ).fetchall()
+        results = [dict(row) for row in rows if int(row["id"]) in member_ids]
     if exclude_track_id is not None:
-        results = [r for r in results if int(r["id"]) != exclude_track_id][:limit]
-    return results
+        results = [r for r in results if int(r["id"]) != exclude_track_id]
+    return results[:limit]

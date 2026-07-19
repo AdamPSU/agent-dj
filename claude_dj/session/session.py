@@ -29,6 +29,7 @@ class Session:
         self.focus: list[float] | None = None
         self.taste: list[float] | None = None
         self.cooldown: dict[int, float] = {}
+        self._last_playlist_id: int | None = None
         # Exclusive end indices of each minted block in plan.tracks.
         # Invariant while attached: always two blocks ahead when possible.
         self._block_ends: list[int] = []
@@ -212,10 +213,13 @@ class Session:
             taste=self.taste,
             cooldown=self.cooldown,
             now=now,
+            previous_playlist_id=self._last_playlist_id,
         )
         if not block.tracks:
             return block
         self.focus = list(block.focus)
+        if block.playlist_id is not None:
+            self._last_playlist_id = int(block.playlist_id)
         recommend.apply_cooldown(
             self.cooldown,
             [int(t["track_id"]) for t in block.tracks],
@@ -308,6 +312,7 @@ class Session:
         self.focus = None
         self.taste = None
         self.cooldown = {}
+        self._last_playlist_id = None
         self._block_ends = []
 
 
