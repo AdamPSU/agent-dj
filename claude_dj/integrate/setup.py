@@ -5,9 +5,16 @@ from __future__ import annotations
 import sys
 from typing import Any
 
+from beaupy import Config, confirm, prompt, select
+from beaupy.spinners import DOTS, Spinner
+from rich.console import Console
+
 from claude_dj import config
 from claude_dj.adapters import spotify
 from claude_dj.integrate import claude_code
+
+Config.raise_on_interrupt = True
+console = Console(stderr=True)
 
 
 def device_label(row: dict[str, Any]) -> str:
@@ -20,26 +27,11 @@ def device_label(row: dict[str, Any]) -> str:
     return base
 
 
-def _print(msg: str = "") -> None:
-    print(msg)
-
-
-def _confirm(message: str, *, default: bool = True) -> bool:
-    """Ask yes/no. Cancel (Ctrl+C / Esc) aborts setup."""
-    import questionary
-
-    answer = questionary.confirm(message, default=default).ask()
-    if answer is None:
-        raise SystemExit("setup cancelled")
-    return bool(answer)
-
-
-def _require_tty() -> None:
-    """Ensure stdin is a real TTY (reopen /dev/tty after curl|bash)."""
+def _bind_tty() -> None:
+    """Point stdin at the controlling TTY (works after curl|bash)."""
     if sys.stdin.isatty():
         return
     try:
-        # Piped install leaves stdin as the script stream; use the console.
         sys.stdin = open("/dev/tty", encoding="utf-8")  # noqa: SIM115
     except OSError:
         print(
@@ -72,20 +64,16 @@ def _resolve_client_id(*, explicit: str | None, force: bool) -> str:
     if existing and not force:
         return existing
 
-    import questionary
-
-    while True:
-        answer = questionary.text(
-            "Spotify Client ID:",
-            default=existing or "",
-            validate=lambda t: True if (t or "").strip() else "Client ID is required",
-        ).ask()
-        if answer is None:
-            raise SystemExit("setup cancelled")
-        cid = answer.strip()
-        if cid:
-            config.set_spotify_client_id(cid)
-            return cid
+    cid = prompt(
+        "Spotify Client ID",
+        initial_value=existing,
+        validator=lambda s: bool(str(s).strip()),
+    )
+    if cid is None:
+        raise SystemExit("setup cancelled")
+    cid = str(cid).strip()
+    config.set_spotify_client_id(cid)
+    return cid
 
 
 def _pick_device(*, explicit: str | None) -> str | None:
@@ -101,43 +89,42 @@ def _pick_device(*, explicit: str | None) -> str | None:
 
     if not rows:
         for _ in range(5):
-            again = _confirm(
+            if not confirm(
                 "No devices found. Open Spotify on a speaker/phone, then retry?",
-                default=True,
-            )
-            if not again:
+                default_is_yes=True,
+            ):
                 return None
             rows = spotify.list_devices()
             if rows:
                 break
         if not rows:
-            _print("Still no devices; skipping device preference.")
+            console.print("Still no devices; skipping device preference.")
             return None
 
     preferred = spotify.load_preferred_device_id()
-    import questionary
-    from questionary import Choice
+    usable = [d for d in rows if d.get("id")]
+    if not usable:
+        return None
 
-    choices = [
-        Choice(title=device_label(d), value=str(d["id"]))
-        for d in rows
-        if d.get("id")
-    ]
-    default = preferred if preferred and any(c.value == preferred for c in choices) else None
-    selected = questionary.select(
-        "Preferred playback device:",
-        choices=choices,
-        default=default,
-    ).ask()
-    if selected is None:
-        raise SystemExit("setup cancelled")
+    labels = [device_label(d) for d in usable]
+    cursor_index = 0
+    if preferred:
+        for i, d in enumerate(usable):
+            if str(d["id"]) == preferred:
+                cursor_index = i
+                break
+
+    console.print("Preferred playback device:")
+    choice = select(labels, cursor_index=cursor_index, cursor="❯", cursor_style="cyan")
+    if choice is None:
+        return None
+    selected = str(usable[labels.index(choice)]["id"])
     spotify.save_preferred_device_id(selected)
     spotify.transfer_playback(selected, play=False)
     return selected
 
 
 def _spotify_login() -> None:
-    """Confirm, then open browser OAuth if needed."""
     already = False
     try:
         already = spotify.session_is_valid()
@@ -145,47 +132,46 @@ def _spotify_login() -> None:
         already = False
 
     if already:
-        if not _confirm(
+        if not confirm(
             "Spotify is already logged in. Re-authenticate anyway?",
-            default=False,
+            default_is_yes=False,
         ):
-            _print("Spotify: keeping existing session.")
+            console.print("Spotify: keeping existing session.")
             return
 
-    if not _confirm(
+    if not confirm(
         "Open your browser to authorize Spotify? (required)",
-        default=True,
+        default_is_yes=True,
     ):
         print("setup cancelled: Spotify login is required", file=sys.stderr)
         raise SystemExit(1)
 
-    _print("Spotify login…")
+    console.print("Spotify login…")
     spotify.ensure_session()
-    _print("Logged in.")
+    console.print("Logged in.")
 
 
 def _install_model() -> dict[str, Any]:
-    """Confirm, then download/load MuQ. Required — no product without it."""
-    if not _confirm(
+    if not confirm(
         "Download and load the MuQ embedding model?\n"
         "  Required for Claude DJ (~2.7 GB disk on first run; uses RAM)",
-        default=True,
+        default_is_yes=True,
     ):
-        print(
-            "setup cancelled: embedding model is required",
-            file=sys.stderr,
-        )
+        print("setup cancelled: embedding model is required", file=sys.stderr)
         raise SystemExit(1)
 
-    _print("Loading MuQ embedding model (may download weights)…")
+    spinner = Spinner(DOTS, "Loading MuQ embedding model…")
+    spinner.start()
     try:
         from claude_dj.embeddings import ensure_model_loaded
 
         device = ensure_model_loaded()
     except Exception as exc:
+        spinner.stop()
         print(f"embedding model failed: {exc}", file=sys.stderr)
         raise SystemExit(1) from exc
-    _print(f"Embedding model ready on {device}.")
+    spinner.stop()
+    console.print(f"Embedding model ready on {device}.")
     return {"ok": True, "action": "loaded", "device": device}
 
 
@@ -198,41 +184,46 @@ def run(
     skip_device: bool = False,
 ) -> dict[str, Any]:
     """Run interactive setup. Requires a TTY. MuQ model is mandatory."""
-    _require_tty()
+    _bind_tty()
 
-    _print("Claude DJ setup")
-    _print("---------------")
+    console.print("Claude DJ setup")
+    console.print("---------------")
 
-    cid = _resolve_client_id(explicit=client_id, force=force)
-    _print(f"Client ID: {cid[:4]}…{cid[-4:]}" if len(cid) > 8 else f"Client ID: {cid}")
+    try:
+        cid = _resolve_client_id(explicit=client_id, force=force)
+        masked = f"{cid[:4]}…{cid[-4:]}" if len(cid) > 8 else cid
+        console.print(f"Client ID: {masked}")
 
-    _spotify_login()
+        _spotify_login()
 
-    chosen_device: str | None = None
-    if not skip_device:
-        _print("Playback device…")
-        chosen_device = _pick_device(explicit=device_id)
-        if chosen_device:
-            _print(f"Device: {chosen_device}")
-        else:
-            _print("Device: (none preferred)")
+        chosen_device: str | None = None
+        if not skip_device:
+            console.print("Playback device…")
+            chosen_device = _pick_device(explicit=device_id)
+            if chosen_device:
+                console.print(f"Device: {chosen_device}")
+            else:
+                console.print("Device: (none preferred)")
 
-    statusline_out: dict[str, Any] | None = None
-    skill_out: dict[str, Any] | None = None
-    if not skip_claude:
-        from claude_dj.integrate import statusline as statusline_mod
+        statusline_out: dict[str, Any] | None = None
+        skill_out: dict[str, Any] | None = None
+        if not skip_claude:
+            from claude_dj.integrate import statusline as statusline_mod
 
-        _print("Claude Code statusline…")
-        statusline_out = statusline_mod.ensure_installed()
-        _print(f"  statusline: {statusline_out.get('action', statusline_out)}")
-        _print("Claude Code /dj skill…")
-        skill_out = claude_code.install_skill()
-        _print(f"  skill: {skill_out.get('action', skill_out)}")
+            console.print("Claude Code statusline…")
+            statusline_out = statusline_mod.ensure_installed()
+            console.print(f"  statusline: {statusline_out.get('action', statusline_out)}")
+            console.print("Claude Code /dj skill…")
+            skill_out = claude_code.install_skill()
+            console.print(f"  skill: {skill_out.get('action', skill_out)}")
 
-    model_out = _install_model()
+        model_out = _install_model()
+    except KeyboardInterrupt:
+        print(file=sys.stderr)
+        raise SystemExit("setup cancelled") from None
 
-    _print()
-    _print("Done. Next: dj play")
+    console.print()
+    console.print("Done. Next: dj play")
     return {
         "ok": True,
         "spotify_client_id": cid,
@@ -241,5 +232,3 @@ def run(
         "skill": skill_out,
         "model": model_out,
     }
-
-

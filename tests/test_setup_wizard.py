@@ -49,7 +49,7 @@ def test_run_full_path(tmp_path, monkeypatch) -> None:
     ]
 
     with (
-        patch.object(setup_wizard, "_confirm", return_value=True),
+        patch.object(setup_wizard, "confirm", return_value=True),
         patch("claude_dj.adapters.spotify.session_is_valid", return_value=False),
         patch("claude_dj.adapters.spotify.ensure_session") as login,
         patch("claude_dj.adapters.spotify.list_devices", return_value=devices),
@@ -95,7 +95,7 @@ def test_run_skip_device_and_claude(tmp_path, monkeypatch) -> None:
     monkeypatch.delenv("SPOTIFY_CLIENT_ID", raising=False)
 
     with (
-        patch.object(setup_wizard, "_confirm", return_value=True),
+        patch.object(setup_wizard, "confirm", return_value=True),
         patch("claude_dj.adapters.spotify.session_is_valid", return_value=False),
         patch("claude_dj.adapters.spotify.ensure_session") as login,
         patch("claude_dj.adapters.spotify.list_devices") as list_dev,
@@ -128,7 +128,7 @@ def test_run_unknown_device_id_fails(tmp_path, monkeypatch) -> None:
     monkeypatch.delenv("SPOTIFY_CLIENT_ID", raising=False)
 
     with (
-        patch.object(setup_wizard, "_confirm", return_value=True),
+        patch.object(setup_wizard, "confirm", return_value=True),
         patch("claude_dj.adapters.spotify.session_is_valid", return_value=False),
         patch("claude_dj.adapters.spotify.ensure_session"),
         patch(
@@ -159,8 +159,21 @@ def test_prompt_client_id_uses_existing_when_not_force(tmp_path, monkeypatch) ->
     assert got == "existing-id"
 
 
+def test_prompt_client_id_asks_when_force(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr("claude_dj.config.APP_DIR", tmp_path)
+    monkeypatch.setattr("claude_dj.config.CONFIG_PATH", tmp_path / "config.json")
+    from claude_dj import config
+
+    config.set_spotify_client_id("old-id")
+    with patch.object(setup_wizard, "prompt", return_value="new-id") as p:
+        got = setup_wizard._resolve_client_id(explicit=None, force=True)
+    assert got == "new-id"
+    p.assert_called_once()
+    assert config.load_app_config()["spotify_client_id"] == "new-id"
+
+
 def test_spotify_login_declined_exits(monkeypatch) -> None:
-    monkeypatch.setattr(setup_wizard, "_confirm", lambda *a, **k: False)
+    monkeypatch.setattr(setup_wizard, "confirm", lambda *a, **k: False)
     with (
         patch("claude_dj.adapters.spotify.session_is_valid", return_value=False),
         patch("claude_dj.adapters.spotify.ensure_session") as login,
@@ -172,7 +185,7 @@ def test_spotify_login_declined_exits(monkeypatch) -> None:
 
 
 def test_model_install_declined_exits(monkeypatch) -> None:
-    monkeypatch.setattr(setup_wizard, "_confirm", lambda *a, **k: False)
+    monkeypatch.setattr(setup_wizard, "confirm", lambda *a, **k: False)
     with patch("claude_dj.embeddings.ensure_model_loaded") as model:
         with pytest.raises(SystemExit) as exc:
             setup_wizard._install_model()
@@ -181,7 +194,7 @@ def test_model_install_declined_exits(monkeypatch) -> None:
 
 
 def test_model_install_failure_exits(monkeypatch) -> None:
-    monkeypatch.setattr(setup_wizard, "_confirm", lambda *a, **k: True)
+    monkeypatch.setattr(setup_wizard, "confirm", lambda *a, **k: True)
     with patch(
         "claude_dj.embeddings.ensure_model_loaded",
         side_effect=RuntimeError("oom"),
@@ -189,3 +202,26 @@ def test_model_install_failure_exits(monkeypatch) -> None:
         with pytest.raises(SystemExit) as exc:
             setup_wizard._install_model()
     assert exc.value.code == 1
+
+
+def test_pick_device_select(monkeypatch) -> None:
+    devices = [
+        {"id": "a", "name": "Mac", "type": "Computer", "is_active": True},
+        {"id": "b", "name": "Phone", "type": "Smartphone", "is_active": False},
+    ]
+    with (
+        patch("claude_dj.adapters.spotify.list_devices", return_value=devices),
+        patch("claude_dj.adapters.spotify.load_preferred_device_id", return_value=None),
+        patch("claude_dj.adapters.spotify.save_preferred_device_id") as save,
+        patch("claude_dj.adapters.spotify.transfer_playback") as transfer,
+        patch.object(
+            setup_wizard,
+            "select",
+            return_value="Phone (Smartphone)",
+        ) as sel,
+    ):
+        got = setup_wizard._pick_device(explicit=None)
+    assert got == "b"
+    save.assert_called_once_with("b")
+    transfer.assert_called_once_with("b", play=False)
+    sel.assert_called_once()
