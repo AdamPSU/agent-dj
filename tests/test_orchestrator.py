@@ -93,6 +93,22 @@ def test_play_recently_played_seed_mode(tmp_path, monkeypatch) -> None:
     assert session.taste is not None
 
 
+def test_play_empty_catalog_not_ready(tmp_path, monkeypatch) -> None:
+    conn = db.connect(tmp_path / "empty.db")
+    monkeypatch.setattr(session_mod.spotify, "iter_top_tracks", lambda *a, **k: iter([]))
+    monkeypatch.setattr(
+        session_mod.spotify, "iter_recently_played", lambda *a, **k: iter([])
+    )
+    fake = FakePlayback()
+    session = orchestrator.Session(playback=fake)
+    out = session.play(conn)
+    assert out["ok"] is False
+    assert out["error"] == "not_ready"
+    assert out["indexed"] == 0
+    assert fake.start_count == 0
+    assert session.mode == orchestrator.MODE_IDLE
+
+
 def test_play_seed_failure_still_plays(tmp_path, monkeypatch) -> None:
     conn = db.connect(tmp_path / "c.db")
     _seed_catalog(conn)

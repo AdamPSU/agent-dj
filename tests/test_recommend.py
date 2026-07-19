@@ -210,6 +210,7 @@ def test_resolve_session_start_with_tops(tmp_path) -> None:
         top_rows=[{"spotify_id": "hit"}, {"spotify_id": "nope"}],
         rng=random.Random(0),
     )
+    assert start is not None
     assert start.taste is not None
     assert start.focus is not None
     assert start.source == "tops"
@@ -223,6 +224,13 @@ def test_resolve_session_start_fallback_random(tmp_path) -> None:
         top_rows=[{"spotify_id": "not-in-catalog"}],
         rng=random.Random(0),
     )
+    assert start is not None
     assert start.taste is None
     assert start.focus is not None
     assert start.source == "random"
+
+
+def test_resolve_session_start_empty_catalog_returns_none(tmp_path) -> None:
+    conn = db.connect(tmp_path / "empty.db")
+    start = recommend.resolve_session_start(conn, top_rows=None, rng=random.Random(0))
+    assert start is None

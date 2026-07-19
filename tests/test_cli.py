@@ -27,6 +27,31 @@ def test_play_ensures_login_and_daemon_then_posts(capsys) -> None:
     assert json.loads(capsys.readouterr().out) == payload
 
 
+def test_play_failure_exits_nonzero(capsys) -> None:
+    payload = {
+        "ok": False,
+        "error": "not_ready",
+        "detail": "catalog has no indexed tracks yet",
+        "hint": "wait for catalog sync",
+        "indexed": 0,
+    }
+    with (
+        patch("claude_dj.integrate.statusline.ensure_installed"),
+        patch.object(cli, "ensure_spotify_login"),
+        patch.object(cli, "ensure_daemon"),
+        patch.object(cli, "request", return_value=payload),
+    ):
+        try:
+            cli.main(["play"])
+            assert False, "expected SystemExit"
+        except SystemExit as exc:
+            assert exc.code == 1
+    captured = capsys.readouterr()
+    assert json.loads(captured.out) == payload
+    assert "not_ready" in captured.err
+    assert "hint" in captured.err
+
+
 def test_sync_and_quit_do_not_spawn(capsys) -> None:
     with (
         patch.object(cli, "ensure_daemon") as ensure,
@@ -83,21 +108,22 @@ def test_ensure_spotify_login_uses_ensure_session() -> None:
 def test_setup_dispatches_to_wizard(capsys) -> None:
     payload = {"ok": True, "spotify_client_id": "x"}
     with patch("claude_dj.integrate.setup.run", return_value=payload) as run:
-        cli.main(["setup", "--client-id", "x", "--yes", "--skip-device", "--skip-claude"])
+        cli.main(
+            [
+                "setup",
+                "--client-id",
+                "x",
+                "--skip-device",
+                "--skip-claude",
+            ]
+        )
     run.assert_called_once()
     kwargs = run.call_args.kwargs
     assert kwargs["client_id"] == "x"
-    assert kwargs["yes"] is True
     assert kwargs["skip_device"] is True
     assert kwargs["skip_claude"] is True
-    assert json.loads(capsys.readouterr().out) == payload
-
-
-def test_uninstall_dispatches(capsys) -> None:
-    payload = {"ok": True, "wiped": False}
-    with patch("claude_dj.integrate.setup.uninstall", return_value=payload) as un:
-        cli.main(["uninstall"])
-    un.assert_called_once_with(wipe=False, yes=False)
+    assert "yes" not in kwargs
+    assert "skip_model" not in kwargs
     assert json.loads(capsys.readouterr().out) == payload
 
 

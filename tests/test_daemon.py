@@ -31,7 +31,7 @@ def test_status_sync_play_contract(monkeypatch) -> None:
     assert len(kicks) == 2
 
 
-def test_play_empty_catalog_returns_empty_block(monkeypatch, tmp_path) -> None:
+def test_play_empty_catalog_returns_not_ready(monkeypatch, tmp_path) -> None:
     from claude_dj.catalog import db
 
     path = tmp_path / "catalog.db"
@@ -39,6 +39,7 @@ def test_play_empty_catalog_returns_empty_block(monkeypatch, tmp_path) -> None:
     conn.close()
 
     monkeypatch.setattr(daemon_mod.catalog_sync, "kick", lambda: True)
+    monkeypatch.setattr(daemon_mod.catalog_sync, "is_syncing", lambda: True)
     monkeypatch.setattr(daemon_mod, "_ensure_monitor", lambda: None)
     real_connect = db.connect
     monkeypatch.setattr(daemon_mod.db, "connect", lambda: real_connect(path))
@@ -57,7 +58,10 @@ def test_play_empty_catalog_returns_empty_block(monkeypatch, tmp_path) -> None:
 
     body = client.post("/play").json()
     assert body["ok"] is False
-    assert body["error"] == "empty_block"
+    assert body["error"] == "not_ready"
+    assert body["indexed"] == 0
+    assert body["syncing"] is True
+    assert "hint" in body
     assert fake.start_count == 0
 
 

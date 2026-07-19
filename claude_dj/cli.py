@@ -93,12 +93,6 @@ def _cmd_setup(argv: list[str]) -> None:
     parser.add_argument("--client-id", default=None, help="Spotify app client ID")
     parser.add_argument("--device-id", default=None, help="Preferred Connect device id")
     parser.add_argument(
-        "--yes",
-        "-y",
-        action="store_true",
-        help="Non-interactive; require flags for missing values",
-    )
-    parser.add_argument(
         "--force",
         action="store_true",
         help="Re-prompt even when already configured",
@@ -117,7 +111,6 @@ def _cmd_setup(argv: list[str]) -> None:
     out = setup_wizard.run(
         client_id=args.client_id,
         device_id=args.device_id,
-        yes=args.yes,
         force=args.force,
         skip_claude=args.skip_claude,
         skip_device=args.skip_device,
@@ -125,35 +118,11 @@ def _cmd_setup(argv: list[str]) -> None:
     print(json.dumps(out))
 
 
-def _cmd_uninstall(argv: list[str]) -> None:
-    from claude_dj.integrate import setup as setup_wizard
-
-    parser = argparse.ArgumentParser(prog="dj uninstall")
-    parser.add_argument(
-        "--wipe",
-        action="store_true",
-        help=f"Also delete {APP_DIR} (tokens, catalog, config)",
-    )
-    parser.add_argument(
-        "--yes",
-        "-y",
-        action="store_true",
-        help="Skip confirmation for --wipe",
-    )
-    args = parser.parse_args(argv)
-    out = setup_wizard.uninstall(wipe=args.wipe, yes=args.yes)
-    print(json.dumps(out))
-
-
 def _cmd_statusline(argv: list[str]) -> None:
     from claude_dj.integrate import statusline as statusline_mod
 
-    sub = argv[0] if argv else None
-    if sub == "uninstall":
-        print(json.dumps(statusline_mod.uninstall()))
-        return
-    if sub not in (None, "run"):
-        print(f"unknown statusline subcommand: {sub}", file=sys.stderr)
+    if argv:
+        print(f"unknown statusline subcommand: {argv[0]}", file=sys.stderr)
         raise SystemExit(2)
     out = statusline_mod.run()
     if out:
@@ -171,7 +140,7 @@ def main(argv: list[str] | None = None) -> None:
 
     if not argv:
         print(
-            "usage: dj <setup|play|status|sync|device|quit|statusline|uninstall>",
+            "usage: dj <setup|play|status|sync|device|quit|statusline>",
             file=sys.stderr,
         )
         raise SystemExit(2)
@@ -180,9 +149,6 @@ def main(argv: list[str] | None = None) -> None:
 
     if cmd == "setup":
         _cmd_setup(rest)
-        return
-    if cmd == "uninstall":
-        _cmd_uninstall(rest)
         return
     if cmd == "statusline":
         _cmd_statusline(rest)
@@ -200,7 +166,7 @@ def main(argv: list[str] | None = None) -> None:
         except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
             print(exc, file=sys.stderr)
             raise SystemExit(1) from exc
-        print(json.dumps(body))
+        _emit(body)
         return
 
     if cmd not in ("play", "status", "sync", "quit"):
@@ -225,7 +191,23 @@ def main(argv: list[str] | None = None) -> None:
         print(exc, file=sys.stderr)
         raise SystemExit(1) from exc
 
+    _emit(body)
+
+
+def _emit(body: dict) -> None:
+    """Print JSON reply; exit 1 when the daemon reports failure."""
     print(json.dumps(body))
+    if body.get("ok") is False:
+        err = body.get("error") or "failed"
+        detail = body.get("detail")
+        hint = body.get("hint")
+        parts = [str(err)]
+        if detail:
+            parts.append(str(detail))
+        if hint:
+            parts.append(f"hint: {hint}")
+        print("; ".join(parts), file=sys.stderr)
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":

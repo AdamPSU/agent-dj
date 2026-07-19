@@ -1,7 +1,8 @@
 """Focus + Taste block recommender (pure; no Spotify HTTP).
 
-Error handling (not_ready, bad focus/size, empty catalog) is deferred —
-callers must gate readiness and pass valid inputs for now.
+Callers must treat resolve_session_start() → None as not ready (no indexed
+embeddings). recommend_block may still return an empty Block if the
+neighborhood is exhausted.
 """
 
 from __future__ import annotations
@@ -258,8 +259,8 @@ def resolve_session_start(
     *,
     top_rows: Sequence[dict[str, Any]] | None = None,
     rng: random.Random | None = None,
-) -> SessionStart:
-    """Build F₀ and optional T from top rows (caller chose time_range + fetched)."""
+) -> SessionStart | None:
+    """Build F₀ and optional T from top rows. None when the catalog has no embeddings."""
     rng = rng or random.Random()
     if top_rows:
         seed = sample_seed_from_tops(conn, top_rows, rng=rng)
@@ -268,10 +269,7 @@ def resolve_session_start(
 
     focus = _random_indexed_embed(conn, rng)
     if focus is None:
-        # No indexed catalog — caller should not mint; placeholder keeps types simple.
-        from claude_dj.embeddings import EMBED_DIM
-
-        focus = [0.0] * EMBED_DIM
+        return None
     return SessionStart(focus=focus, taste=None, source="random")
 
 

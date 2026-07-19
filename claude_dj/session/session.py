@@ -98,6 +98,14 @@ class Session:
 
             seed_rows, seed_mode, seed_error = self._fetch_seed_rows()
             start = recommend.resolve_session_start(conn, top_rows=seed_rows)
+            if start is None:
+                self._reset()
+                return self._fail(
+                    conn,
+                    "not_ready",
+                    "catalog has no indexed tracks yet; wait for sync or run: dj sync",
+                )
+
             self.focus = list(start.focus)
             self.taste = list(start.taste) if start.taste is not None else None
             self.cooldown = {}
@@ -105,11 +113,11 @@ class Session:
             first = self._mint(conn, advance=False)
             if first is None or not first.tracks:
                 self._reset()
-                return {
-                    "ok": False,
-                    "error": "empty_block",
-                    "detail": "recommend returned no tracks",
-                }
+                return self._fail(
+                    conn,
+                    "empty_block",
+                    "recommend returned no tracks",
+                )
             second = self._mint(conn, advance=True)
             tracks = list(first.tracks)
             self._block_ends = [len(tracks)]
@@ -195,21 +203,44 @@ class Session:
         return len(self._block_ends) - 1
 
     def _ensure_two_blocks(self, conn) -> dict[str, Any] | None:
-        """If we've entered the last loaded block, mint one more to keep two ahead."""
+        """If we've entered the last loaded block, mint one more to keep two ahead.
+
+        Mint failure is soft: stay attached on the remaining plan; retry next tick.
+        """
         bi = self._block_index()
         if bi is None or bi < len(self._block_ends) - 1:
             return None
         block = self._mint(conn, advance=True)
         if block is None or not block.tracks:
             return {
-                "ok": False,
-                "error": "empty_block",
-                "detail": "next-block recommend returned no tracks",
+                "ok": True,
+                "event": "mint_deferred",
+                "detail": "could not mint next block; will retry",
+                "indexed": db.count_indexed(conn),
             }
         self.plan.append(block.tracks)
         self._block_ends.append(len(self.plan.tracks))
         self.playback.start_block(self.plan.remaining())
         return {"ok": True, "event": "minted", "size": block.size}
+
+    def _fail(self, conn, error: str, detail: str) -> dict[str, Any]:
+        """Structured play failure with catalog context for CLI/agents."""
+        body: dict[str, Any] = {
+            "ok": False,
+            "error": error,
+            "detail": detail,
+            "indexed": db.count_indexed(conn),
+            "catalog_total": db.count_tracks(conn),
+        }
+        try:
+            from claude_dj.catalog import sync as catalog_sync
+
+            body["syncing"] = catalog_sync.is_syncing()
+        except Exception:
+            body["syncing"] = False
+        if error == "not_ready":
+            body["hint"] = "dj sync" if not body["syncing"] else "wait for catalog sync"
+        return body
 
     def _handle_event(self, conn, event: PlanEvent) -> dict[str, Any]:
         """Advance cursor; when the next block starts, mint one more."""
