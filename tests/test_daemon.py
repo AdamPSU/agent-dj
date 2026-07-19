@@ -25,13 +25,16 @@ def test_status_sync_jam_contract(monkeypatch) -> None:
     assert status["ok"] is True
     assert status["syncing"] is True
 
-    assert client.post("/sync").json() == {"ok": True, "syncing": True}
+    sync_body = client.post("/sync").json()
+    assert sync_body["ok"] is True
+    assert sync_body["syncing"] is True
     jam_body = client.post("/jam").json()
-    assert jam_body["ok"] is False
+    # No db → play path fails hard from connect, or waiting if session handles it.
+    assert jam_body.get("ok") is False or jam_body.get("waiting") is True
     assert len(kicks) == 2
 
 
-def test_play_empty_catalog_returns_not_ready(monkeypatch, tmp_path) -> None:
+def test_play_empty_catalog_returns_waiting(monkeypatch, tmp_path) -> None:
     from claude_dj.catalog import db
 
     path = tmp_path / "catalog.db"
@@ -53,19 +56,19 @@ def test_play_empty_catalog_returns_not_ready(monkeypatch, tmp_path) -> None:
     )
 
     fake = FakePlayback()
-    monkeypatch.setattr(daemon_mod, "_session", Session(playback=fake))
+    session = Session(playback=fake)
+    monkeypatch.setattr(daemon_mod, "_session", session)
     client = TestClient(daemon_mod.app)
 
     body = client.post("/jam").json()
-    assert body["ok"] is False
-    assert body["error"] == "not_ready"
+    assert body["ok"] is True
+    assert body.get("waiting") is True
     assert body["indexed"] == 0
-    assert body["syncing"] is True
-    assert "hint" in body
+    assert session.auto_jam is True
     assert fake.start_count == 0
 
 
-def test_devices_list_and_select(monkeypatch) -> None:
+def test_devices_list(monkeypatch) -> None:
     from claude_dj.adapters import spotify as spotify_mod
 
     devices = [
@@ -79,32 +82,13 @@ def test_devices_list_and_select(monkeypatch) -> None:
         }
     ]
     monkeypatch.setattr(spotify_mod, "list_devices", lambda: devices)
-    monkeypatch.setattr(spotify_mod, "load_preferred_device_id", lambda: None)
-    saved: list[str] = []
-    monkeypatch.setattr(
-        spotify_mod, "save_preferred_device_id", lambda did: saved.append(did)
-    )
-    transferred: list[str] = []
-    monkeypatch.setattr(
-        spotify_mod,
-        "transfer_playback",
-        lambda did, play=False: transferred.append(did),
-    )
+    monkeypatch.setattr(spotify_mod, "load_preferred_device_id", lambda: "dev1")
     client = TestClient(daemon_mod.app)
 
     listed = client.get("/devices").json()
     assert listed["ok"] is True
     assert listed["devices"] == devices
-
-    selected = client.post("/devices/dev1").json()
-    assert selected["ok"] is True
-    assert selected["preferred_device_id"] == "dev1"
-    assert saved == ["dev1"]
-    assert transferred == ["dev1"]
-
-    bad = client.post("/devices/nope").json()
-    assert bad["ok"] is False
-    assert bad["error"] == "unknown_device"
+    assert listed["preferred_device_id"] == "dev1"
 
 
 def test_kill_sets_should_exit(monkeypatch) -> None:

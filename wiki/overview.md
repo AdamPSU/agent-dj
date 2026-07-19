@@ -31,12 +31,11 @@ Package root is **`claude_dj/`** (formerly `backend/`). Branch `algorithm-v1`. G
 
 ## Commands
 
-`setup` · `jam` · `kill` · `statusline` · `sync` · `device` · `device <id>` · `help`
+`setup` · `jam` · `kill` · `sync` · `device` · `device <id>` · `help`
 
 - **`setup`**: client ID → Spotify login → device → statusline → `/dj` skill → MuQ
-- **`jam`**: session + daemon + kick sync + mint pair of blocks + Connect
-- **`kill`**: stop daemon (Spotify keeps playing)
-- **`statusline`**: toggle Claude Code bar
+- **`jam`**: enable statusline + session + daemon + kick sync + mint pair of blocks + Connect
+- **`kill`**: stop daemon + disable statusline (Spotify keeps playing)
 - Client ID: env `SPOTIFY_CLIENT_ID` **or** `~/.claude-dj/config.json` (no shell export required)
 
 ## Key findings

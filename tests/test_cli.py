@@ -1,4 +1,3 @@
-import json
 from unittest.mock import patch
 
 from claude_dj import cli
@@ -9,7 +8,9 @@ def test_help_default_and_explicit(capsys) -> None:
     out = capsys.readouterr().out
     assert "jam" in out
     assert "kill" in out
-    assert "statusline" in out
+    assert "device" in out
+    assert "device [id]" not in out
+    assert "  statusline" not in out
 
     cli.main(["help"])
     assert "jam" in capsys.readouterr().out
@@ -26,8 +27,8 @@ def test_unknown_command_shows_help(capsys) -> None:
     assert "jam" in err.out
 
 
-def test_jam_ensures_login_daemon_and_statusline(capsys) -> None:
-    payload = {"ok": True, "playing": True, "block": {"n": 5, "tracks": []}}
+def test_jam_success_prints_enjoy(capsys) -> None:
+    payload = {"ok": True, "size": 12, "source": "random"}
     with (
         patch("claude_dj.integrate.statusline.ensure_installed") as install,
         patch.object(cli, "ensure_spotify_login") as login,
@@ -39,16 +40,50 @@ def test_jam_ensures_login_daemon_and_statusline(capsys) -> None:
     login.assert_called_once_with()
     ensure.assert_called_once_with()
     request.assert_called_once_with("POST", "/jam")
-    assert json.loads(capsys.readouterr().out) == payload
+    captured = capsys.readouterr()
+    assert captured.out.strip() == "enjoy!"
+    assert captured.err == ""
 
 
-def test_jam_failure_exits_nonzero(capsys) -> None:
+def test_jam_resumed_prints_joined(capsys) -> None:
+    payload = {"ok": True, "resumed": True}
+    with (
+        patch("claude_dj.integrate.statusline.ensure_installed"),
+        patch.object(cli, "ensure_spotify_login"),
+        patch.object(cli, "ensure_daemon"),
+        patch.object(cli, "request", return_value=payload),
+    ):
+        cli.main(["jam"])
+    assert capsys.readouterr().out.strip() == "joined existing session."
+
+
+def test_jam_waiting_prints_sync_message_exit_zero(capsys) -> None:
+    payload = {
+        "ok": True,
+        "waiting": True,
+        "indexed": 0,
+        "catalog_total": 720,
+    }
+    with (
+        patch("claude_dj.integrate.statusline.ensure_installed"),
+        patch.object(cli, "ensure_spotify_login"),
+        patch.object(cli, "ensure_daemon"),
+        patch.object(cli, "request", return_value=payload),
+    ):
+        cli.main(["jam"])
+    captured = capsys.readouterr()
+    assert (
+        captured.out.strip()
+        == "your songs are being synced. please wait; the jam will start shortly."
+    )
+    assert captured.err == ""
+
+
+def test_jam_hard_failure_exits_nonzero(capsys) -> None:
     payload = {
         "ok": False,
-        "error": "not_ready",
-        "detail": "catalog has no indexed tracks yet",
-        "hint": "wait for catalog sync",
-        "indexed": 0,
+        "error": "play_failed",
+        "detail": "no active device",
     }
     with (
         patch("claude_dj.integrate.statusline.ensure_installed"),
@@ -62,34 +97,39 @@ def test_jam_failure_exits_nonzero(capsys) -> None:
         except SystemExit as exc:
             assert exc.code == 1
     captured = capsys.readouterr()
-    assert json.loads(captured.out) == payload
-    assert "not_ready" in captured.err
+    assert captured.out == ""
+    assert "couldn't start: no active device" in captured.err
 
 
-def test_kill_stops_daemon(capsys) -> None:
+def test_kill_prints_goodbye(capsys) -> None:
     with (
+        patch("claude_dj.integrate.statusline.uninstall") as uninstall,
         patch.object(cli, "reachable", return_value=True),
         patch.object(cli, "request", return_value={"ok": True}) as request,
     ):
         cli.main(["kill"])
+    uninstall.assert_called_once_with()
     request.assert_called_once_with("POST", "/kill")
-    assert json.loads(capsys.readouterr().out) == {"ok": True}
+    assert capsys.readouterr().out.strip() == "goodbye!"
 
 
-def test_kill_when_daemon_down(capsys) -> None:
-    with patch.object(cli, "reachable", return_value=False):
+def test_kill_when_daemon_down_still_goodbye(capsys) -> None:
+    with (
+        patch("claude_dj.integrate.statusline.uninstall") as uninstall,
+        patch.object(cli, "reachable", return_value=False),
+    ):
         cli.main(["kill"])
-    assert json.loads(capsys.readouterr().out) == {"ok": True}
+    uninstall.assert_called_once_with()
+    assert capsys.readouterr().out.strip() == "goodbye!"
 
 
-def test_statusline_bare_toggles(capsys) -> None:
-    with patch(
-        "claude_dj.integrate.statusline.toggle",
-        return_value={"ok": True, "action": "installed", "enabled": True},
-    ) as toggle:
+def test_statusline_bare_is_unknown(capsys) -> None:
+    try:
         cli.main(["statusline"])
-    toggle.assert_called_once_with()
-    assert json.loads(capsys.readouterr().out)["enabled"] is True
+        assert False, "expected SystemExit"
+    except SystemExit as exc:
+        assert exc.code == 2
+    assert "unknown command" in capsys.readouterr().err
 
 
 def test_statusline_render_flag(capsys) -> None:
@@ -100,6 +140,30 @@ def test_statusline_render_flag(capsys) -> None:
         cli.main(["statusline", "--render"])
     run.assert_called_once_with()
     assert "Four Tet" in capsys.readouterr().out
+
+
+def test_sync_started(capsys) -> None:
+    with (
+        patch.object(cli, "reachable", return_value=True),
+        patch.object(cli, "request", return_value={"ok": True, "syncing": True}) as request,
+    ):
+        cli.main(["sync"])
+    request.assert_called_once_with("POST", "/sync")
+    assert capsys.readouterr().out.strip() == "finding new songs."
+
+
+def test_sync_already_running(capsys) -> None:
+    # kick() returns False when already running; daemon still reports syncing.
+    with (
+        patch.object(cli, "reachable", return_value=True),
+        patch.object(
+            cli,
+            "request",
+            return_value={"ok": True, "syncing": True, "already": True},
+        ),
+    ):
+        cli.main(["sync"])
+    assert capsys.readouterr().out.strip() == "sync already in progress."
 
 
 def test_sync_spawns_if_needed(capsys) -> None:
@@ -115,8 +179,25 @@ def test_sync_spawns_if_needed(capsys) -> None:
     request.assert_called_once_with("POST", "/sync")
 
 
-def test_device_list_ensures_login_and_daemon(capsys) -> None:
-    payload = {"ok": True, "devices": [], "preferred_device_id": None}
+def test_device_list_plain(capsys) -> None:
+    payload = {
+        "ok": True,
+        "devices": [
+            {
+                "id": "dev1",
+                "name": "Living Room",
+                "type": "Speaker",
+                "is_active": True,
+            },
+            {
+                "id": "dev2",
+                "name": "Phone",
+                "type": "Smartphone",
+                "is_active": False,
+            },
+        ],
+        "preferred_device_id": "dev1",
+    }
     with (
         patch.object(cli, "ensure_spotify_login") as login,
         patch.object(cli, "ensure_daemon") as ensure,
@@ -126,19 +207,29 @@ def test_device_list_ensures_login_and_daemon(capsys) -> None:
     login.assert_called_once_with()
     ensure.assert_called_once_with()
     request.assert_called_once_with("GET", "/devices")
-    assert json.loads(capsys.readouterr().out) == payload
+    out = capsys.readouterr().out
+    assert "* Living Room (dev1)" in out
+    assert "  Phone (dev2)" in out
 
 
-def test_device_select_posts_id(capsys) -> None:
-    payload = {"ok": True, "preferred_device_id": "dev1"}
+def test_device_list_empty(capsys) -> None:
+    payload = {"ok": True, "devices": [], "preferred_device_id": None}
     with (
         patch.object(cli, "ensure_spotify_login"),
         patch.object(cli, "ensure_daemon"),
-        patch.object(cli, "request", return_value=payload) as request,
+        patch.object(cli, "request", return_value=payload),
     ):
+        cli.main(["device"])
+    assert capsys.readouterr().out.strip() == "no devices online."
+
+
+def test_device_id_arg_is_unknown(capsys) -> None:
+    try:
         cli.main(["device", "dev1"])
-    request.assert_called_once_with("POST", "/devices/dev1")
-    assert json.loads(capsys.readouterr().out) == payload
+        assert False, "expected SystemExit"
+    except SystemExit as exc:
+        assert exc.code == 2
+    assert "unknown command" in capsys.readouterr().err
 
 
 def test_ensure_spotify_login_uses_ensure_session() -> None:

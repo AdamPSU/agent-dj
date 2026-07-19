@@ -272,6 +272,17 @@ def count_tracks(conn: sqlite3.Connection) -> int:
     return int(row["n"])
 
 
+def count_embed_remaining(conn: sqlite3.Connection) -> int:
+    """Tracks still waiting on embed work (pending + retry)."""
+    row = conn.execute(
+        """
+        SELECT COUNT(*) AS n FROM tracks
+        WHERE status IN ('pending', 'retry')
+        """
+    ).fetchone()
+    return int(row["n"])
+
+
 def get_playlist_by_spotify_id(conn: sqlite3.Connection, spotify_id: str) -> dict | None:
     """Fetch one playlist by Spotify id."""
     row = conn.execute(

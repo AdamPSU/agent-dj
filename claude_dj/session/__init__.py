@@ -7,6 +7,7 @@ import random
 from claude_dj.adapters import spotify
 from claude_dj.session.plan import Plan, PlanEvent
 from claude_dj.session.session import (
+    JAM_READY_INDEXED,
     MODE_ATTACHED,
     MODE_IDLE,
     Session,
@@ -19,6 +20,7 @@ __all__ = [
     "Session",
     "MODE_IDLE",
     "MODE_ATTACHED",
+    "JAM_READY_INDEXED",
     "_SEED_MODES",
     "spotify",
     "random",

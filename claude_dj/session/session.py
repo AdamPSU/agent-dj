@@ -13,6 +13,7 @@ from claude_dj.session.plan import Plan, PlanEvent
 
 MODE_IDLE = "idle"
 MODE_ATTACHED = "attached"
+JAM_READY_INDEXED = 30
 # Seed affinity modes: tops (~4w / ~6m / ~1y) + recently played (~right now).
 _SEED_MODES = ("short_term", "medium_term", "long_term", "recently_played")
 
@@ -24,6 +25,7 @@ class Session:
         self._lock = threading.Lock()
         self.plan = Plan()
         self.mode = MODE_IDLE
+        self.auto_jam = False
         self.focus: list[float] | None = None
         self.taste: list[float] | None = None
         self.cooldown: dict[int, float] = {}
@@ -96,6 +98,7 @@ class Session:
             "mode": self.mode,
             "indexed": db.count_indexed(conn),
             "catalog_total": db.count_tracks(conn),
+            "embed_remaining": db.count_embed_remaining(conn),
             "now_playing": now_playing,
         }
 
@@ -112,15 +115,26 @@ class Session:
             if self.mode == MODE_ATTACHED and self.plan.tracks:
                 return {"ok": True, "resumed": True}
 
+            indexed = db.count_indexed(conn)
+            if indexed < JAM_READY_INDEXED:
+                self.auto_jam = True
+                return {
+                    "ok": True,
+                    "waiting": True,
+                    "indexed": indexed,
+                    "catalog_total": db.count_tracks(conn),
+                }
+
             seed_rows, seed_mode, seed_error = self._fetch_seed_rows()
             start = recommend.resolve_session_start(conn, top_rows=seed_rows)
             if start is None:
-                self._reset()
-                return self._fail(
-                    conn,
-                    "not_ready",
-                    "catalog has no indexed tracks yet; wait for sync or run: dj sync",
-                )
+                self.auto_jam = True
+                return {
+                    "ok": True,
+                    "waiting": True,
+                    "indexed": indexed,
+                    "catalog_total": db.count_tracks(conn),
+                }
 
             self.focus = list(start.focus)
             self.taste = list(start.taste) if start.taste is not None else None
@@ -144,6 +158,7 @@ class Session:
             self.plan.replace(tracks)
             self.playback.start_block(tracks)
             self.mode = MODE_ATTACHED
+            self.auto_jam = False
             out: dict[str, Any] = {
                 "ok": True,
                 "size": len(tracks),
@@ -288,6 +303,7 @@ class Session:
     def _reset(self) -> None:
         """Idle the session and wipe plan + recommend state."""
         self.mode = MODE_IDLE
+        self.auto_jam = False
         self.plan.clear()
         self.focus = None
         self.taste = None
@@ -301,4 +317,5 @@ __all__ = [
     "Session",
     "MODE_IDLE",
     "MODE_ATTACHED",
+    "JAM_READY_INDEXED",
 ]

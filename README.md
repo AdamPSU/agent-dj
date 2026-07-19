@@ -27,12 +27,10 @@ dj setup --client-id <id> --device-id <connect-id>
 
 ```sh
 dj jam               # start/resume recommender; enables statusline
-dj statusline        # toggle Claude Code status bar on/off
-dj kill              # stop daemon (jam + bar process). Spotify keeps playing
+dj kill              # stop daemon + disable statusline. Spotify keeps playing
 dj sync
 dj device            # list Connect devices
-dj device <id>       # prefer a device
-dj setup             # re-run wizard (idempotent)
+dj setup             # re-run wizard (idempotent; pick preferred device here)
 dj help
 ```
 
@@ -40,7 +38,6 @@ In **Claude Code**, prefer shell/command mode for zero model lag:
 
 ```text
 !dj jam
-!dj statusline
 !dj kill
 ```
 
@@ -48,7 +45,7 @@ In **Claude Code**, prefer shell/command mode for zero model lag:
 
 ### Statusline
 
-Setup and `dj jam` enable the bar (wrap your existing Claude Code `statusLine`). Toggle anytime with `dj statusline`. While the daemon is up, any Spotify now-playing and/or catalog sync work shows:
+`dj jam` (and setup) enable the bar; `dj kill` disables it (restores your previous Claude Code `statusLine`). While the daemon is up, any Spotify now-playing and/or catalog sync work shows:
 
 ```text
 ♪ Four Tet — Baby · 1:42/3:10 · sync: 128/900 songs

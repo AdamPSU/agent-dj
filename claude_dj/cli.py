@@ -18,16 +18,14 @@ dj — local Spotify coding companion
 Commands:
   setup                 Interactive setup (Spotify + MuQ + statusline)
   jam                   Start/resume recommender; enables statusline
-  kill                  Stop daemon (jam + bar process). Spotify keeps playing
-  statusline            Toggle Claude Code status bar on/off
+  kill                  Stop daemon and disable statusline. Spotify keeps playing
   sync                  Kick catalog sync
-  device [id]           List Connect devices, or prefer one
+  device                List Connect devices
   help                  Show this help
 
 Examples:
   dj setup
   dj jam
-  dj statusline
   dj kill
 """
 
@@ -136,26 +134,72 @@ def _cmd_setup(argv: list[str]) -> None:
     )
 
 
-def _cmd_statusline(argv: list[str]) -> None:
-    """Toggle bar for users; `--render` is the Claude Code statusLine hook."""
+def _cmd_statusline_render(argv: list[str]) -> None:
+    """Hidden Claude Code hook: `dj statusline --render` only."""
     from claude_dj.integrate import statusline as statusline_mod
 
-    if argv == ["--render"] or argv == ["render"]:
-        rendered = statusline_mod.run()
-        if rendered:
-            sys.stdout.write(rendered if rendered.endswith("\n") else rendered + "\n")
-        return
-
-    if argv:
-        print(f"unknown statusline argument: {argv[0]}", file=sys.stderr)
+    if argv != ["--render"] and argv != ["render"]:
+        print("unknown command: statusline", file=sys.stderr)
+        _cmd_help()
         raise SystemExit(2)
 
-    out = statusline_mod.toggle()
-    _emit(out)
+    rendered = statusline_mod.run()
+    if rendered:
+        sys.stdout.write(rendered if rendered.endswith("\n") else rendered + "\n")
 
 
 def _cmd_help() -> None:
     sys.stdout.write(HELP_TEXT)
+
+
+def _say(msg: str) -> None:
+    sys.stdout.write(msg if msg.endswith("\n") else msg + "\n")
+
+
+def _fail(msg: str, code: int = 1) -> None:
+    print(msg, file=sys.stderr)
+    raise SystemExit(code)
+
+
+def _format_jam(body: dict) -> None:
+    if body.get("ok") is False:
+        detail = body.get("detail") or body.get("error") or "failed"
+        _fail(f"couldn't start: {detail}")
+    if body.get("resumed"):
+        _say("joined existing session.")
+        return
+    if body.get("waiting"):
+        _say(
+            "your songs are being synced. please wait; the jam will start shortly."
+        )
+        return
+    _say("enjoy!")
+
+
+def _format_sync(body: dict) -> None:
+    if body.get("ok") is False:
+        detail = body.get("detail") or body.get("error") or "failed"
+        _fail(f"couldn't sync: {detail}")
+    if body.get("already"):
+        _say("sync already in progress.")
+        return
+    _say("finding new songs.")
+
+
+def _format_device_list(body: dict) -> None:
+    if body.get("ok") is False:
+        detail = body.get("detail") or body.get("error") or "failed"
+        _fail(f"couldn't list devices: {detail}")
+    devices = body.get("devices") or []
+    if not devices:
+        _say("no devices online.")
+        return
+    preferred = body.get("preferred_device_id")
+    for d in devices:
+        did = str(d.get("id") or "")
+        name = str(d.get("name") or "unknown").strip() or "unknown"
+        mark = "*" if preferred and did == preferred else " "
+        _say(f"{mark} {name} ({did})")
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -177,22 +221,22 @@ def main(argv: list[str] | None = None) -> None:
         _cmd_setup(rest)
         return
     if cmd == "statusline":
-        _cmd_statusline(rest)
+        # Not a user command — Claude Code statusLine hook only.
+        _cmd_statusline_render(rest)
         return
 
     if cmd == "device":
-        device_id = rest[0] if rest else None
+        if rest:
+            print(f"unknown command: device {' '.join(rest)}", file=sys.stderr)
+            _cmd_help()
+            raise SystemExit(2)
         try:
             ensure_spotify_login()
             ensure_daemon()
-            if device_id:
-                body = request("POST", f"/devices/{device_id}")
-            else:
-                body = request("GET", "/devices")
+            body = request("GET", "/devices")
         except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
-            print(exc, file=sys.stderr)
-            raise SystemExit(1) from exc
-        _emit(body)
+            _fail(str(exc))
+        _format_device_list(body)
         return
 
     if cmd == "jam":
@@ -204,9 +248,8 @@ def main(argv: list[str] | None = None) -> None:
             ensure_daemon()
             body = request("POST", "/jam")
         except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
-            print(exc, file=sys.stderr)
-            raise SystemExit(1) from exc
-        _emit(body)
+            _fail(str(exc))
+        _format_jam(body)
         return
 
     if cmd == "sync":
@@ -216,42 +259,25 @@ def main(argv: list[str] | None = None) -> None:
                 ensure_daemon()
             body = request("POST", "/sync")
         except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
-            print(exc, file=sys.stderr)
-            raise SystemExit(1) from exc
-        _emit(body)
+            _fail(str(exc))
+        _format_sync(body)
         return
 
     if cmd == "kill":
         try:
-            if not reachable():
-                print(json.dumps({"ok": True}))
-                return
-            body = request("POST", "/kill")
+            from claude_dj.integrate import statusline as statusline_mod
+
+            statusline_mod.uninstall()
+            if reachable():
+                request("POST", "/kill")
         except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
-            print(exc, file=sys.stderr)
-            raise SystemExit(1) from exc
-        _emit(body)
+            _fail(str(exc))
+        _say("goodbye!")
         return
 
     print(f"unknown command: {cmd}", file=sys.stderr)
     _cmd_help()
     raise SystemExit(2)
-
-
-def _emit(body: dict) -> None:
-    """Print JSON reply; exit 1 when the daemon reports failure."""
-    print(json.dumps(body))
-    if body.get("ok") is False:
-        err = body.get("error") or "failed"
-        detail = body.get("detail")
-        hint = body.get("hint")
-        parts = [str(err)]
-        if detail:
-            parts.append(str(detail))
-        if hint:
-            parts.append(f"hint: {hint}")
-        print("; ".join(parts), file=sys.stderr)
-        raise SystemExit(1)
 
 
 if __name__ == "__main__":

@@ -23,13 +23,13 @@ dj setup
 |---------|----------|
 | `setup` | TTY wizard: client ID → login → device → statusline → `/dj` skill → MuQ |
 | `jam` | statusline ensure → `ensure_session` → `ensure_daemon` → `POST /jam` |
-| `kill` | `POST /kill` (stop daemon; Spotify keeps playing) |
-| `statusline` | toggle Claude Code bar on/off |
-| `statusline --render` | Claude Code hook (render only; not user-facing) |
+| `kill` | statusline uninstall → `POST /kill` |
 | `sync` | `POST /sync` |
 | `device` | auth + daemon → `GET /devices` |
 | `device <id>` | auth + daemon → `POST /devices/{id}` |
 | `help` | list commands |
+
+Hidden: `statusline --render` is the Claude Code statusLine hook (not user-facing).
 
 Hidden: `__daemon__` runs FastAPI via `claude_dj.daemon.server`.
 

@@ -136,20 +136,67 @@ def test_format_idle_spotify_playback() -> None:
     assert line == "♪ Four Tet — Baby · 1:42/3:10"
 
 
-def test_format_hidden_when_sync_complete() -> None:
+def test_format_shows_sync_until_full() -> None:
+    # Active thread, even if counts look complete mid-pass.
+    line = statusline.format_line(
+        {
+            "mode": "idle",
+            "syncing": True,
+            "indexed": 900,
+            "catalog_total": 900,
+            "embed_remaining": 0,
+            "now_playing": None,
+        },
+        color=False,
+        now=0.0,
+    )
+    assert "sync: 900/900 songs" in line
+
+    # Thread finished but pending/retry remain — still show until full sync.
+    remaining = statusline.format_line(
+        {
+            "mode": "idle",
+            "syncing": False,
+            "indexed": 100,
+            "catalog_total": 900,
+            "embed_remaining": 50,
+            "now_playing": None,
+        },
+        color=False,
+        now=0.0,
+    )
+    assert "sync: 100/900 songs" in remaining
+
+    # Full sync: no thread, no remaining work.
     assert (
         statusline.format_line(
             {
                 "mode": "idle",
-                "syncing": True,
+                "syncing": False,
                 "indexed": 900,
                 "catalog_total": 900,
+                "embed_remaining": 0,
                 "now_playing": None,
             },
             color=False,
         )
         == ""
     )
+
+    # Pull phase 0/0 while thread active.
+    empty = statusline.format_line(
+        {
+            "mode": "idle",
+            "syncing": True,
+            "indexed": 0,
+            "catalog_total": 0,
+            "embed_remaining": 0,
+            "now_playing": None,
+        },
+        color=False,
+        now=0.0,
+    )
+    assert "sync: 0/0 songs" in empty
 
 
 def test_format_uses_spotify_green_when_color() -> None:
@@ -269,7 +316,7 @@ def test_jam_auto_installs_statusline(monkeypatch, capsys) -> None:
         m.setattr(cli, "request", lambda *a, **k: {"ok": True})
         cli.main(["jam"])
     assert called == [1]
-    assert json.loads(capsys.readouterr().out)["ok"] is True
+    assert capsys.readouterr().out.strip() == "enjoy!"
 
 
 def test_ensure_installed_never_saves_self_as_previous(tmp_path: Path) -> None:
@@ -356,7 +403,7 @@ def test_ensure_installed_repairs_self_previous_on_noop(tmp_path: Path) -> None:
     assert mark["previous"] is None
 
 
-def test_toggle_enable_then_disable(tmp_path: Path) -> None:
+def test_install_then_uninstall_restores_previous(tmp_path: Path) -> None:
     settings = tmp_path / "settings.json"
     marker = tmp_path / "statusline.json"
     settings.write_text(
@@ -372,35 +419,21 @@ def test_toggle_enable_then_disable(tmp_path: Path) -> None:
         encoding="utf-8",
     )
     cmd = "/abs/dj statusline --render"
-    on = statusline.toggle(
+    on = statusline.ensure_installed(
         settings_path=settings,
         marker_path=marker,
         install_command=cmd,
     )
     assert on["enabled"] is True
-    assert on["action"] == "installed"
     data = json.loads(settings.read_text(encoding="utf-8"))
     assert data["statusLine"]["command"] == cmd
 
-    off = statusline.toggle(
+    off = statusline.uninstall(
         settings_path=settings,
         marker_path=marker,
-        install_command=cmd,
     )
     assert off["enabled"] is False
     assert off["action"] == "disabled"
     data = json.loads(settings.read_text(encoding="utf-8"))
     assert data["statusLine"]["command"] == "bash /tmp/old.sh"
     assert data["statusLine"]["padding"] == 2
-
-    # Re-enable keeps original previous
-    on2 = statusline.toggle(
-        settings_path=settings,
-        marker_path=marker,
-        install_command=cmd,
-    )
-    assert on2["enabled"] is True
-    data = json.loads(settings.read_text(encoding="utf-8"))
-    assert data["statusLine"]["command"] == cmd
-    mark = json.loads(marker.read_text(encoding="utf-8"))
-    assert mark["previous"]["command"] == "bash /tmp/old.sh"

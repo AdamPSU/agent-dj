@@ -17,8 +17,7 @@ CLI client + localhost HTTP daemon. Host tooling (setup, statusline, skill) live
 |-----|------|
 | setup | local only (config, OAuth, device, Claude Code) |
 | jam | POST `/jam` (+ auth + spawn + statusline enable) |
-| kill | POST `/kill` |
-| statusline | local only (toggle Claude Code bar) |
+| kill | POST `/kill` (+ statusline disable) |
 | sync | POST `/sync` |
 | device | GET `/devices` |
 | device id | POST `/devices/{id}` |

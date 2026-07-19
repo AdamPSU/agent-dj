@@ -31,7 +31,13 @@ def _shutdown() -> None:
 def _monitor_loop() -> None:
     while not _monitor_stop.is_set():
         try:
-            if _session.mode == "attached":
+            if _session.auto_jam and _session.mode != "attached":
+                conn = db.connect()
+                try:
+                    _session.play(conn)
+                finally:
+                    conn.close()
+            elif _session.mode == "attached":
                 conn = db.connect()
                 try:
                     result = _session.tick(conn)
@@ -63,6 +69,7 @@ def status_body() -> dict:
         "mode": "idle",
         "indexed": 0,
         "catalog_total": 0,
+        "embed_remaining": 0,
         "now_playing": None,
     }
     try:
@@ -73,6 +80,9 @@ def status_body() -> dict:
             conn.close()
     except Exception:
         log.exception("status snapshot failed")
+    # Full sync = no active thread and no pending/retry embed work.
+    remaining = int(body.get("embed_remaining") or 0)
+    body["syncing"] = bool(body.get("syncing")) or remaining > 0
     return body
 
 
@@ -83,8 +93,12 @@ def status() -> dict:
 
 @app.post("/sync")
 def sync() -> dict:
-    catalog_sync.kick()
-    return {"ok": True, "syncing": catalog_sync.is_syncing()}
+    started = catalog_sync.kick()
+    return {
+        "ok": True,
+        "syncing": catalog_sync.is_syncing(),
+        "already": not started,
+    }
 
 
 @app.post("/jam")

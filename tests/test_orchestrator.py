@@ -93,7 +93,7 @@ def test_play_recently_played_seed_mode(tmp_path, monkeypatch) -> None:
     assert session.taste is not None
 
 
-def test_play_empty_catalog_not_ready(tmp_path, monkeypatch) -> None:
+def test_play_below_threshold_waits_auto_jam(tmp_path, monkeypatch) -> None:
     conn = db.connect(tmp_path / "empty.db")
     monkeypatch.setattr(session_mod.spotify, "iter_top_tracks", lambda *a, **k: iter([]))
     monkeypatch.setattr(
@@ -102,11 +102,39 @@ def test_play_empty_catalog_not_ready(tmp_path, monkeypatch) -> None:
     fake = FakePlayback()
     session = orchestrator.Session(playback=fake)
     out = session.play(conn)
-    assert out["ok"] is False
-    assert out["error"] == "not_ready"
+    assert out["ok"] is True
+    assert out.get("waiting") is True
     assert out["indexed"] == 0
+    assert session.auto_jam is True
     assert fake.start_count == 0
     assert session.mode == orchestrator.MODE_IDLE
+
+
+def test_play_waits_until_ready_threshold(tmp_path, monkeypatch) -> None:
+    conn = db.connect(tmp_path / "partial.db")
+    _seed_catalog(conn, n=29)
+    monkeypatch.setattr(session_mod.spotify, "iter_top_tracks", lambda *a, **k: iter([]))
+    monkeypatch.setattr(
+        session_mod.spotify, "iter_recently_played", lambda *a, **k: iter([])
+    )
+    fake = FakePlayback()
+    session = orchestrator.Session(playback=fake)
+    out = session.play(conn)
+    assert out["ok"] is True
+    assert out.get("waiting") is True
+    assert out["indexed"] == 29
+    assert session.auto_jam is True
+    assert fake.start_count == 0
+
+    # Cross threshold without a second play() call path: seed one more, play again.
+    tid = db.upsert_track(conn, spotify_id="sp:29", name="T29", artists="A29")
+    db.upsert_embedding(conn, tid, _vec(29 * 0.3))
+    out2 = session.play(conn)
+    assert out2["ok"] is True
+    assert out2.get("waiting") is not True
+    assert session.auto_jam is False
+    assert fake.start_count == 1
+    assert session.mode == orchestrator.MODE_ATTACHED
 
 
 def test_play_seed_failure_still_plays(tmp_path, monkeypatch) -> None:
@@ -315,6 +343,7 @@ def test_status_fields(tmp_path) -> None:
     session = orchestrator.Session(playback=FakePlayback())
     snap = session.status(conn)
     assert snap["indexed"] == 0
+    assert snap["embed_remaining"] == 0
     assert snap["now_playing"] is None
 
 

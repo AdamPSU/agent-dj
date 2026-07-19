@@ -66,19 +66,27 @@ def format_ms(ms: int | None) -> str:
     return f"{m}:{s:02d}"
 
 
-def sync_work_visible(syncing: bool, indexed: int, catalog_total: int) -> bool:
-    return bool(syncing) and int(indexed) < int(catalog_total)
+def sync_work_visible(payload: dict[str, Any]) -> bool:
+    """Show sync until full: active thread or remaining pending/retry embeds.
+
+    Prefer daemon `syncing` (already OR'd with remaining). Fall back to counts
+    so older payloads without embed_remaining still work during a thread run.
+    """
+    if bool(payload.get("syncing")):
+        return True
+    remaining = payload.get("embed_remaining")
+    if remaining is not None:
+        return int(remaining) > 0
+    # Legacy: incomplete index only (skipped tracks make this imperfect).
+    indexed = int(payload.get("indexed") or 0)
+    total = int(payload.get("catalog_total") or 0)
+    return total > 0 and indexed < total
 
 
 def should_show_line(payload: dict[str, Any]) -> bool:
     np = payload.get("now_playing")
     playing = isinstance(np, dict) and bool(np.get("spotify_id") or np.get("name"))
-    syncing = sync_work_visible(
-        bool(payload.get("syncing")),
-        int(payload.get("indexed") or 0),
-        int(payload.get("catalog_total") or 0),
-    )
-    return playing or syncing
+    return playing or sync_work_visible(payload)
 
 
 def format_line(
@@ -109,11 +117,7 @@ def format_line(
             f"{_c(_TIME, f'{prog}/{dur}', color=color)}"
         )
 
-    if sync_work_visible(
-        bool(payload.get("syncing")),
-        int(payload.get("indexed") or 0),
-        int(payload.get("catalog_total") or 0),
-    ):
+    if sync_work_visible(payload):
         i = int(payload.get("indexed") or 0)
         n = int(payload.get("catalog_total") or 0)
         spin = sync_glyph(now=now)

@@ -29,7 +29,6 @@ def skill_is_installed(*, skill_path: Path | None = None) -> bool:
         or "`dj`" in text
         or "dj jam" in text
         or "dj kill" in text
-        or "dj statusline" in text
     )
 
 

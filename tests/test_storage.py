@@ -138,3 +138,8 @@ def test_list_indexed_track_ids_and_count(tmp_path) -> None:
     db.set_status(conn, c, "pending")
     assert db.count_indexed(conn) == 2
     assert sorted(db.list_indexed_track_ids(conn)) == sorted([a, b])
+    assert db.count_embed_remaining(conn) == 1
+    db.set_status(conn, c, "retry")
+    assert db.count_embed_remaining(conn) == 1
+    db.set_status(conn, c, "skipped")
+    assert db.count_embed_remaining(conn) == 0
