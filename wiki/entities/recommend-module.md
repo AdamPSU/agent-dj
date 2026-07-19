@@ -1,28 +1,31 @@
 ---
 title: Recommend module
-description: "`backend/music/recommend.py` \u2014 pure block selection over sqlite-vec\
-  \ (no HTTP, no Spotify writes)."
-date: '2026-07-14'
+description: "`claude_dj/recommend/engine.py` \u2014 pure Focus + Taste block recommender\
+  \ over MuQ embeddings. No Spotify HTTP. Wired from `Session.play` / mint path."
+date: '2026-07-18'
 tags:
 - recommend
-- algorithm
+- focus
+- taste
 ---
 
-`backend/music/recommend.py` — pure block selection over sqlite-vec (no HTTP, no Spotify writes).
+`claude_dj/recommend/engine.py` — pure Focus + Taste block recommender over MuQ embeddings. No Spotify HTTP. Wired from `Session.play` / mint path.
 
 ## API
 
-- `recommend_block(conn, n=5, …)` — full block or typed error
-- `next_block_seed(last, recency=None)` — L2(0.7 last + 0.3 recency) or last only
-- `sample_seed_from_top(conn, top_rows, …)` — rank-softmax over indexed tops
-- `apply_cooldown` — caller-owned map
-- Softmax sample over −distance / τ (default 0.15)
+| Symbol | Role |
+|--------|------|
+| `resolve_session_start(conn, top_rows=…)` | F₀ + optional T from tops ∩ indexed (rank-softmax); else random catalog, T=None |
+| `recommend_block(conn, focus=…, taste=…)` | Walk focus; softmax picks; empty neighborhood **ends block early** |
+| `advance_focus(focus, taste=…)` | Between blocks: slide toward T + noise |
+| `apply_cooldown(map, ids, now)` | Caller marks played tracks |
+| `sample_seed_from_tops` | Rank-softmax among indexed tops |
 
-## Rules
+Caller chooses seed mode (`short_term` / `medium_term` / `long_term` / `recently_played`) and fetches rows; recommend never calls Spotify.
 
-≥50 indexed; n ∈ {3,4,5}; 3h cooldown; cold seed via tops (orchestrator) or random fallback.
+## Related
 
-Called by [orchestrator](orchestrator.md), not by CLI directly.
+- [Session](session.md)
+- [Recommendation blocks](../concepts/recommendation-blocks.md)
 
-[^1]: backend/music/recommend.py
-
+[^1]: claude_dj/recommend/engine.py; tests/test_recommend.py

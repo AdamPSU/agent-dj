@@ -1,15 +1,15 @@
 ---
 title: Deezer adapter
-description: '`backend/adapters/deezer.py` maps a track **ISRC** to a short **preview
+description: '`claude_dj/adapters/deezer.py` maps a track **ISRC** to a short **preview
   URL** for embedding. No auth.'
-date: '2026-07-14'
+date: '2026-07-18'
 tags:
 - deezer
 - isrc
 - preview
 ---
 
-`backend/adapters/deezer.py` maps a track **ISRC** to a short **preview URL** for embedding. No auth.
+`claude_dj/adapters/deezer.py` maps a track **ISRC** to a short **preview URL** for embedding. No auth.
 
 ## API
 
@@ -26,5 +26,4 @@ Spotify provides ISRC → Deezer provides ~30s MP3 preview → MuQ embeds previe
 - [Catalog sync](../concepts/catalog-sync.md)
 - [MuQ embeddings](muq-embeddings.md)
 
-[^1]: backend/adapters/deezer.py; backend/sync.py
-
+[^1]: claude_dj/adapters/deezer.py; claude_dj/catalog/sync.py

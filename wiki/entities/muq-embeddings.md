@@ -1,16 +1,15 @@
 ---
 title: MuQ embeddings
-description: "`backend/music/embeddings.py` \u2014 MuQ-MuLan 512-d fingerprints from\
+description: "`claude_dj/embeddings/muq.py` \u2014 MuQ-MuLan 512-d fingerprints from\
   \ Deezer previews."
-date: '2026-07-14'
+date: '2026-07-18'
 tags:
 - muq
 - embeddings
 ---
 
-`backend/music/embeddings.py` — MuQ-MuLan 512-d fingerprints from Deezer previews.
+`claude_dj/embeddings/muq.py` — MuQ-MuLan 512-d fingerprints from Deezer previews.
 
-Model `OpenMuQ/MuQ-MuLan-large`, 24 kHz mono, device CUDA→MPS→CPU, loaded once per process. Used by catalog sync, not by live recommend path after indexing.[^1]
+Model `OpenMuQ/MuQ-MuLan-large`, 24 kHz mono, device CUDA→MPS→CPU, loaded once per process. Used by catalog sync; live recommend reads stored vectors only.[^1]
 
-[^1]: backend/music/embeddings.py; README.md
-
+[^1]: claude_dj/embeddings/muq.py; README.md

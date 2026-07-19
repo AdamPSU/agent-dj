@@ -1,23 +1,23 @@
 ---
 title: Spotify adapter
-description: "`backend/adapters/spotify.py` \u2014 PKCE auth, catalog reads, player\
-  \ control, devices."
-date: '2026-07-14'
+description: "`claude_dj/adapters/spotify/` \u2014 PKCE auth, catalog reads, player\
+  \ control, devices (package fa\xE7ade; logic still in one module)."
+date: '2026-07-18'
 tags:
 - spotify
 - oauth
 - devices
 ---
 
-`backend/adapters/spotify.py` — PKCE auth, catalog reads, player control, devices.
+`claude_dj/adapters/spotify/` — PKCE auth, catalog reads, player control, devices (package façade; logic still in one module).
 
 ## Auth
 
-Client id env `SPOTIFY_CLIENT_ID`; tokens `~/.claude-dj/spotify_tokens.json`. `ensure_session` validates via `/me` or re-login.
+Client id: env `SPOTIFY_CLIENT_ID` or `~/.claude-dj/config.json` via `resolve_spotify_client_id()`. Tokens `~/.claude-dj/spotify_tokens.json`. `ensure_session` validates via `/me` or re-login.
 
 ## Catalog
 
-`iter_owned_playlists`, `iter_playlist_tracks` via `/playlists/{id}/items`.
+`iter_owned_playlists`, `iter_playlist_tracks` via `/playlists/{id}/items`. Also `iter_top_tracks`, `iter_recently_played` for cold-start seeds.
 
 ## Playback / devices
 
@@ -25,7 +25,6 @@ Client id env `SPOTIFY_CLIENT_ID`; tokens `~/.claude-dj/spotify_tokens.json`. `e
 - `list_devices`, `transfer_playback`
 - Preferred device file `~/.claude-dj/device.json`
 
-Scopes include playlist read + playback read/modify.[^1]
+Scopes include playlist read + playback read/modify + top/recently-played.[^1]
 
-[^1]: backend/adapters/spotify.py; backend/config.py
-
+[^1]: claude_dj/adapters/spotify/; claude_dj/config.py

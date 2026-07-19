@@ -1,15 +1,15 @@
 ---
 title: Catalog database
-description: '`backend/storage/db.py` is the SQLite access layer; `backend/config.py`
+description: '`claude_dj/catalog/db.py` is the SQLite access layer; `claude_dj/config.py`
   defines paths and Spotify constants.'
-date: '2026-07-14'
+date: '2026-07-18'
 tags:
 - database
 - config
 - sqlite
 ---
 
-`backend/storage/db.py` is the SQLite access layer; `backend/config.py` defines paths and Spotify constants.
+`claude_dj/catalog/db.py` is the SQLite access layer; `claude_dj/config.py` defines paths and Spotify constants.
 
 ## Config highlights
 
@@ -18,9 +18,9 @@ tags:
 | `HOST` / `PORT` | `127.0.0.1` / `8787` |
 | `APP_DIR` | `~/.claude-dj` |
 | `DB_PATH` | `~/.claude-dj/catalog.db` |
+| `CONFIG_PATH` | `~/.claude-dj/config.json` |
 | `SPOTIFY_TOKEN_PATH` | `~/.claude-dj/spotify_tokens.json` |
-| `DEVICE_PATH` | `~/.claude-dj/device.json` |
-| `SPOTIFY_CLIENT_ID` | from env |
+| Client ID | `resolve_spotify_client_id()` — env then config file |
 
 ## DB helpers (selected)
 
@@ -35,5 +35,4 @@ tags:
 - [Local storage](../concepts/local-storage.md)
 - [Catalog sync](../concepts/catalog-sync.md)
 
-[^1]: backend/storage/db.py; backend/config.py
-
+[^1]: claude_dj/catalog/db.py; claude_dj/config.py

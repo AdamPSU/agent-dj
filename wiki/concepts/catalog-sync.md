@@ -1,8 +1,8 @@
 ---
 title: Catalog sync
-description: Catalog sync is the background pipeline that turns **owned Spotify playlists**
-  into a local searchable music catalog with embeddings.
-date: '2026-07-14'
+description: Catalog sync turns **owned Spotify playlists** into a local searchable
+  catalog with embeddings (`claude_dj/catalog/sync.py`).
+date: '2026-07-18'
 tags:
 - sync
 - catalog
@@ -10,7 +10,7 @@ tags:
 - embeddings
 ---
 
-Catalog sync is the background pipeline that turns **owned Spotify playlists** into a local searchable music catalog with embeddings.
+Catalog sync turns **owned Spotify playlists** into a local searchable catalog with embeddings (`claude_dj/catalog/sync.py`).
 
 ## Trigger
 
@@ -40,14 +40,14 @@ flowchart TD
 
 | Rule | Detail |
 |------|--------|
-| Owned only | Playlist `owner.id == /me.id` — followed playlists excluded[^3] |
-| Snapshot skip | Unchanged `snapshot_id` skips re-fetch of that playlist’s items[^2] |
-| Sequential embed | One preview → embed at a time (model cost / simplicity)[^2] |
-| Statuses | `pending` → `indexed` \| `skipped` \| `retry`[^4] |
+| Owned only | Playlist `owner.id == /me.id` |
+| Snapshot skip | Unchanged `snapshot_id` skips re-fetch |
+| Sequential embed | One preview → embed at a time |
+| Statuses | `pending` → `indexed` \| `skipped` \| `retry` |
 
 ## Progress
 
-`/status` exposes `syncing`, `current` (name/artists of track being embedded), and per-status track counts for a future statusline — the CLI does not pretty-print readiness.[^1]
+`/status` exposes `syncing`, indexed counts, `now_playing` for CLI and statusline.[^1]
 
 ## Related
 
@@ -56,8 +56,5 @@ flowchart TD
 - [MuQ embeddings](../entities/muq-embeddings.md)
 - [Local storage](local-storage.md)
 
-[^1]: backend/daemon.py
-[^2]: backend/sync.py
-[^3]: backend/adapters/spotify.py
-[^4]: backend/storage/db.py
-
+[^1]: claude_dj/daemon/server.py
+[^2]: claude_dj/catalog/sync.py

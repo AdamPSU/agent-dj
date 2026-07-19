@@ -1,68 +1,76 @@
 ---
 title: Overview
-description: 'Claude DJ is a **local OpenCode companion** that indexes owned Spotify
-  playlists into MuQ-MuLan embeddings, mints vibe-continuity **blocks**, and plays
-  them on Spotify Connect via '
-date: '2026-07-14'
+description: 'Claude DJ is a **local Spotify companion** for coding sessions: indexes
+  owned playlists into MuQ-MuLan embeddings, mints Focus+Taste **blocks**, and plays
+  them on Spotify Connect v'
+date: '2026-07-18'
 tags:
 - overview
 - architecture
 - claude-dj
 ---
 
-Claude DJ is a **local OpenCode companion** that indexes owned Spotify playlists into MuQ-MuLan embeddings, mints vibe-continuity **blocks**, and plays them on Spotify Connect via a **virtual queue** (ElevenLabs narration still future).
+Claude DJ is a **local Spotify companion** for coding sessions: indexes owned playlists into MuQ-MuLan embeddings, mints Focus+Taste **blocks**, and plays them on Spotify Connect via a **virtual queue**. Claude Code gets a statusline row and `/dj` skill after setup.
 
 ## Scope
 
-Current `backend/` on `algorithm-v1` (2026-07-14). Ground truth: code + tests + README.
+Package root is **`claude_dj/`** (formerly `backend/`). Branch `algorithm-v1`. Ground truth: code + tests + README.
 
-| Layer | Role |
-|-------|------|
-| OpenCode `/dj` | Passes args to installed `claude-dj` |
-| CLI | Auth, spawn daemon, HTTP client |
-| Daemon | REST + catalog sync kick + orchestrator + monitor |
-| Sync + storage | Owned playlists → Deezer preview → embed → sqlite-vec |
-| `backend/music/` | embeddings, recommend, playback ports |
-| Orchestrator | Virtual queue, modes idle/attached/yielded, tick reconcile |
+| Layer | Path / role |
+|-------|-------------|
+| Install | `install.sh` → `uv tool install` → `claude-dj setup` |
+| CLI | `claude_dj/cli.py` — auth client, spawn daemon, HTTP |
+| Integrate | `claude_dj/integrate/` — setup wizard, statusline, `/dj` skill |
+| Daemon | `claude_dj/daemon/server.py` — FastAPI + monitor |
+| Session | `claude_dj/session/` — Plan + Session (mint/reconcile) |
+| Catalog | `claude_dj/catalog/` — sqlite + sync |
+| Recommend | `claude_dj/recommend/` — Focus + Taste blocks |
+| Playback | `claude_dj/playback/` — ports + Spotify/Fake |
+| Embeddings | `claude_dj/embeddings/` — MuQ-MuLan |
+| Adapters | `claude_dj/adapters/` — Spotify, Deezer |
 
 ## Commands
 
-`play` · `status` · `sync` · `device` · `device <id>` · `quit`
+`setup` · `play` · `status` · `sync` · `device` · `device <id>` · `quit` · `uninstall` · `statusline`
 
-- **`play`**: session + daemon + kick sync + mint block when ≥50 indexed + start Spotify (or `not_ready`)
-- **`device`**: list Connect devices; optional id saved to `~/.claude-dj/device.json`
-- No separate `init` / `spotify-login` / recommend CLI
+- **`setup`**: client ID → Spotify login → device → statusline → `/dj` skill (questionary TTY)
+- **`play`**: session + daemon + kick sync + mint pair of blocks + Connect
+- Client ID: env `SPOTIFY_CLIENT_ID` **or** `~/.claude-dj/config.json` (no shell export required)
 
 ## Key findings
 
-1. End-to-end music path is wired: catalog → recommend → virtual queue → Connect multi-URI block + poll monitor.[^1]
-2. Recommend needs **≥50 indexed** tracks; cold seed from Spotify tops (rank-softmax); next block L2(0.7 last + 0.3 short_term recency).[^2]
-3. Spotify native queue is **not** the source of truth; app owns the plan; foreign tracks → **yield**.[^3]
-4. Package layout: control in top-level modules; music logic under `backend/music/`.[^4]
-5. Paths: tokens + preferred device + DB under `~/.claude-dj/`.[^5]
+1. End-to-end path: catalog → recommend → virtual queue → Connect multi-URI blocks + 1s monitor.[^1]
+2. Cold play loads **two blocks**; when the cursor enters the last loaded block, mint **one** more (always two ahead).[^2]
+3. Spotify native queue is **not** SoT; foreign track → quit daemon.[^3]
+4. Layered package `claude_dj/` with host tooling under `integrate/`.[^4]
+5. Durable state under `~/.claude-dj/` including `config.json`.[^5]
 
 ## Architecture
 
 ```mermaid
 flowchart LR
+  User --> Install["install.sh"]
+  Install --> Setup["claude-dj setup"]
+  Setup --> Config["config.json"]
   User --> CLI["claude-dj"]
   CLI --> Daemon["FastAPI :8787"]
-  Daemon --> Sync
-  Daemon --> Orch["orchestrator"]
+  Daemon --> Sync["catalog/sync"]
+  Daemon --> Sess["session"]
   Sync --> Spotify
   Sync --> Deezer
-  Sync --> Emb["music/embeddings"]
-  Sync --> DB
-  Orch --> Rec["music/recommend"]
-  Orch --> Play["music/playback"]
+  Sync --> Emb["embeddings"]
+  Sync --> DB["catalog/db"]
+  Sess --> Rec["recommend"]
+  Sess --> Play["playback"]
   Rec --> DB
   Play --> Spotify
 ```
 
 ## Recent updates
 
-- **2026-07-14 (later):** Orchestrator, virtual-queue playback, device preference, `backend/music/` rename, daemon log on spawn failures.
-- **2026-07-14:** Wiki rebuild for play-centric CLI + catalog + pure recommend.
+- **2026-07-18:** Architecture 1 — rename `backend` → `claude_dj/`; session/catalog/recommend/playback/embeddings/integrate split.
+- **2026-07-18:** Streamlined install (`install.sh` + setup wizard + durable client ID + Claude Code skill).
+- **2026-07-18:** Two-block buffer refill (enter last block → mint one).
 
 ## Page index
 
@@ -76,7 +84,7 @@ flowchart LR
 ### Entities
 - [claude-dj CLI](entities/claude-dj-cli.md)
 - [Daemon](entities/daemon.md)
-- [Orchestrator](entities/orchestrator.md)
+- [Session](entities/session.md)
 - [Spotify adapter](entities/spotify-adapter.md)
 - [Deezer adapter](entities/deezer-adapter.md)
 - [MuQ embeddings](entities/muq-embeddings.md)
@@ -84,9 +92,8 @@ flowchart LR
 - [Playback module](entities/playback-module.md)
 - [Catalog database](entities/catalog-database.md)
 
-[^1]: backend/daemon.py; backend/orchestrator.py; backend/music/playback.py
-[^2]: backend/music/recommend.py
-[^3]: docs/superpowers/specs/2026-07-14-playback-virtual-queue-design.md; backend/orchestrator.py
-[^4]: backend/music/
-[^5]: backend/config.py
-
+[^1]: claude_dj/daemon/server.py; claude_dj/session/; claude_dj/playback/port.py
+[^2]: claude_dj/session/session.py
+[^3]: claude_dj/session/plan.py
+[^4]: claude_dj/
+[^5]: claude_dj/config.py
