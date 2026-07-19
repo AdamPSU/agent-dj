@@ -186,7 +186,7 @@ def run(
         _print(f"  skill: {skill_out.get('action', skill_out)}")
 
     _print()
-    _print("Done. Next: claude-dj play")
+    _print("Done. Next: dj play")
     return {
         "ok": True,
         "spotify_client_id": cid,

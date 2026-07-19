@@ -73,5 +73,5 @@ def resolve_spotify_client_id() -> str:
     if file_id:
         return file_id
     raise ConfigError(
-        "Spotify client ID not configured; run: claude-dj setup"
+        "Spotify client ID not configured; run: dj setup"
     )

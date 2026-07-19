@@ -136,10 +136,10 @@ def format_line(
 def resolve_install_command() -> str:
     """Absolute command string written into Claude Code settings."""
     exe = Path(sys.executable).resolve()
-    sibling = exe.parent / "claude-dj"
+    sibling = exe.parent / "dj"
     if sibling.is_file() and os.access(sibling, os.X_OK):
         return f"{sibling} statusline"
-    which = shutil.which("claude-dj")
+    which = shutil.which("dj")
     if which:
         return f"{Path(which).resolve()} statusline"
     return f"{exe} -m claude_dj.cli statusline"

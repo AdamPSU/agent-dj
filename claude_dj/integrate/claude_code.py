@@ -25,7 +25,7 @@ def skill_is_installed(*, skill_path: Path | None = None) -> bool:
         text = path.read_text(encoding="utf-8")
     except OSError:
         return False
-    return MARKER in text and "claude-dj" in text
+    return MARKER in text and ("dj status" in text or "claude-dj" in text)
 
 
 def install_skill(

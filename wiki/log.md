@@ -27,7 +27,7 @@
 ## [2026-07-18] update | Architecture 1 + install path
 
 - Renamed package `backend/` → `claude_dj/` (layered layout: session, catalog, recommend, playback, embeddings, integrate, daemon)
-- Install: `install.sh` + `claude-dj setup` (questionary); client ID in `~/.claude-dj/config.json`
+- Install: `install.sh` + `dj setup` (questionary); client ID in `~/.claude-dj/config.json`
 - Session: two-block buffer; enter last block → mint one
 - Updated overview + all concept/entity pages to new paths; Session page is `entities/session.md` (retired `orchestrator.md`)
 - Key takeaway: product package matches Architecture 1; install no longer needs shell `export`

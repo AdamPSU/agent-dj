@@ -167,7 +167,7 @@ def test_ensure_installed_wraps_and_is_idempotent(tmp_path: Path) -> None:
         ),
         encoding="utf-8",
     )
-    cmd = "/abs/claude-dj statusline"
+    cmd = "/abs/dj statusline"
     out = statusline.ensure_installed(
         settings_path=settings,
         marker_path=marker,
@@ -193,7 +193,7 @@ def test_ensure_installed_wraps_and_is_idempotent(tmp_path: Path) -> None:
 def test_uninstall_restores_previous(tmp_path: Path) -> None:
     settings = tmp_path / "settings.json"
     marker = tmp_path / "statusline.json"
-    cmd = "/abs/claude-dj statusline"
+    cmd = "/abs/dj statusline"
     statusline.ensure_installed(
         settings_path=settings,
         marker_path=marker,

@@ -23,7 +23,7 @@ def test_resolve_client_id_missing_raises(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(config, "APP_DIR", tmp_path)
     monkeypatch.setattr(config, "CONFIG_PATH", tmp_path / "config.json")
     monkeypatch.delenv("SPOTIFY_CLIENT_ID", raising=False)
-    with pytest.raises(config.ConfigError, match="claude-dj setup"):
+    with pytest.raises(config.ConfigError, match="dj setup"):
         config.resolve_spotify_client_id()
 
 

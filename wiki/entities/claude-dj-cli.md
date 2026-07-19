@@ -1,6 +1,6 @@
 ---
-title: claude-dj CLI
-description: Entry point `claude_dj.cli:main` (`pyproject.toml` script `claude-dj`).
+title: dj CLI
+description: Entry point `claude_dj.cli:main` (`pyproject.toml` script `dj`).
 date: '2026-07-18'
 tags:
 - cli
@@ -8,7 +8,7 @@ tags:
 - install
 ---
 
-Entry point `claude_dj.cli:main` (`pyproject.toml` script `claude-dj`).
+Entry point `claude_dj.cli:main` (`pyproject.toml` script `dj`).
 
 ## Install
 
@@ -16,7 +16,7 @@ Entry point `claude_dj.cli:main` (`pyproject.toml` script `claude-dj`).
 curl -fsSL https://raw.githubusercontent.com/AdamPSU/claude-dj-plugin/main/install.sh | bash
 ```
 
-`install.sh` ensures `uv`, runs `uv tool install`, then `claude-dj setup`.
+`install.sh` ensures `uv`, runs `uv tool install`, then `dj setup`.
 
 ## Commands
 

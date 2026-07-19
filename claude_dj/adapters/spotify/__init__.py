@@ -63,7 +63,7 @@ def authorize_url(state: str, challenge: str, redirect_uri: str) -> str:
     except ConfigError as exc:
         raise SystemExit(str(exc)) from exc
     if not client_id:
-        raise SystemExit("Spotify client ID not configured; run: claude-dj setup")
+        raise SystemExit("Spotify client ID not configured; run: dj setup")
     query = urllib.parse.urlencode(
         {
             "client_id": client_id,
@@ -221,7 +221,7 @@ def get_access_token() -> str:
     """Return a valid Spotify access token, renewing it first if it has expired."""
     tokens = load_tokens()
     if tokens is None:
-        raise RuntimeError("not logged in; run: claude-dj play")
+        raise RuntimeError("not logged in; run: dj play")
     if time.time() >= float(tokens["expires_at"]):
         try:
             _client_id()

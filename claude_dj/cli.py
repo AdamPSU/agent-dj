@@ -89,7 +89,7 @@ def ensure_spotify_login() -> None:
 def _cmd_setup(argv: list[str]) -> None:
     from claude_dj.integrate import setup as setup_wizard
 
-    parser = argparse.ArgumentParser(prog="claude-dj setup")
+    parser = argparse.ArgumentParser(prog="dj setup")
     parser.add_argument("--client-id", default=None, help="Spotify app client ID")
     parser.add_argument("--device-id", default=None, help="Preferred Connect device id")
     parser.add_argument(
@@ -128,7 +128,7 @@ def _cmd_setup(argv: list[str]) -> None:
 def _cmd_uninstall(argv: list[str]) -> None:
     from claude_dj.integrate import setup as setup_wizard
 
-    parser = argparse.ArgumentParser(prog="claude-dj uninstall")
+    parser = argparse.ArgumentParser(prog="dj uninstall")
     parser.add_argument(
         "--wipe",
         action="store_true",
@@ -171,7 +171,7 @@ def main(argv: list[str] | None = None) -> None:
 
     if not argv:
         print(
-            "usage: claude-dj <setup|play|status|sync|device|quit|statusline|uninstall>",
+            "usage: dj <setup|play|status|sync|device|quit|statusline|uninstall>",
             file=sys.stderr,
         )
         raise SystemExit(2)

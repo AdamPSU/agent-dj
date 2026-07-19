@@ -14,7 +14,7 @@ def test_install_skill_writes_skill_md(tmp_path: Path, monkeypatch) -> None:
     assert out["action"] in ("installed", "updated")
     assert skill_path.is_file()
     text = skill_path.read_text(encoding="utf-8")
-    assert "claude-dj" in text
+    assert "dj status" in text or "`dj`" in text
     assert "name: dj" in text
 
 

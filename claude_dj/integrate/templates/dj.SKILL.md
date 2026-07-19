@@ -4,9 +4,9 @@ description: Control Claude DJ (local Spotify coding companion). Use for play, s
 disable-model-invocation: true
 ---
 
-Run the installed CLI `claude-dj`.
+Run the installed CLI `dj`.
 
-- No args → `claude-dj status`
-- Else → `claude-dj $ARGUMENTS`
+- No args → `dj status`
+- Else → `dj $ARGUMENTS`
 
 Return the command output concisely. Do not add extra explanation unless the command fails.

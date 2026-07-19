@@ -10,7 +10,7 @@ User command:
 
 Command handling:
 
-- If the command is empty (/dj ``), run `claude-dj status`.
-- Otherwise, run `claude-dj $ARGUMENTS`.
+- If the command is empty (/dj ``), run `dj status`.
+- Otherwise, run `dj $ARGUMENTS`.
 
 Return the command output concisely. Do not add extra explanation unless the command fails.

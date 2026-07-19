@@ -16,7 +16,7 @@ dependencies = [
 ]
 
 [project.scripts]
-claude-dj = "claude_dj.cli:main"
+dj = "claude_dj.cli:main"
 
 [dependency-groups]
 dev = [

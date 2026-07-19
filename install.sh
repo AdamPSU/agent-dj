@@ -29,16 +29,21 @@ fi
 
 command -v uv >/dev/null 2>&1 || die "uv not found after install; add ~/.local/bin to PATH"
 
-info "Installing claude-dj (${SPEC})…"
+info "Installing dj (${SPEC})…"
 uv tool install --force "${SPEC}"
 
 export PATH="${HOME}/.local/bin:${PATH}"
-if ! command -v claude-dj >/dev/null 2>&1; then
-  info "claude-dj is installed but not on PATH."
+if ! command -v dj >/dev/null 2>&1; then
+  info "dj is installed but not on PATH."
   info "Try: uv tool update-shell && exec \$SHELL"
-  info "Then re-run: claude-dj setup"
+  info "Then re-run: dj setup"
   exit 0
 fi
 
+# Drop legacy binary name if a prior install left it behind.
+if command -v claude-dj >/dev/null 2>&1; then
+  info "Note: legacy 'claude-dj' may still be on PATH from an older install; use 'dj'."
+fi
+
 info "Running setup…"
-exec claude-dj setup "$@"
+exec dj setup "$@"

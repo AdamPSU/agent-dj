@@ -1,14 +1,14 @@
 # Claude DJ
 
-Local Spotify DJ companion for coding sessions (Claude Code statusline + `/dj`).
+Local Spotify DJ companion for coding sessions (Claude Code statusline + shell/`!` command mode).
 
 ## Install
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/AdamPSU/claude-dj-plugin/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/AdamPSU/claude-dj-plugin/algorithm-v1/install.sh | bash
 ```
 
-This installs [`uv`](https://docs.astral.sh/uv/) if needed, puts `claude-dj` on your PATH, and runs **setup** (TTY wizard).
+This installs [`uv`](https://docs.astral.sh/uv/) if needed, puts **`dj`** on your PATH, and runs **setup** (TTY wizard).
 
 ### Spotify app (once)
 
@@ -19,24 +19,31 @@ This installs [`uv`](https://docs.astral.sh/uv/) if needed, puts `claude-dj` on 
 Optional non-interactive setup:
 
 ```sh
-claude-dj setup --client-id <id> --device-id <connect-id> --yes
+dj setup --client-id <id> --device-id <connect-id> --yes
 ```
 
 ## Use
 
 ```sh
-claude-dj play              # auth if needed, start daemon, mint + play
-claude-dj status
-claude-dj sync
-claude-dj device            # list Connect devices
-claude-dj device <id>       # prefer a device
-claude-dj quit
-claude-dj setup             # re-run wizard (idempotent)
-claude-dj uninstall         # restore statusline, remove /dj skill
-claude-dj uninstall --wipe  # also delete ~/.claude-dj
+dj play              # auth if needed, start daemon, mint + play
+dj status
+dj sync
+dj device            # list Connect devices
+dj device <id>       # prefer a device
+dj quit
+dj setup             # re-run wizard (idempotent)
+dj uninstall         # restore statusline, remove /dj skill
+dj uninstall --wipe  # also delete ~/.claude-dj
 ```
 
-In **Claude Code**, after setup: `/dj play`, `/dj status`, …
+In **Claude Code**, prefer shell/command mode for zero model lag:
+
+```text
+!dj play
+!dj status
+```
+
+(Optional skill still installs as `/dj` → same CLI.)
 
 ### Statusline
 
@@ -49,7 +56,7 @@ Setup (and first `play`) wraps your existing Claude Code `statusLine`. When DJ i
 ## How it works
 
 ```text
-/dj …  or  claude-dj  →  localhost HTTP  →  daemon (FastAPI)
+dj …  →  localhost HTTP  →  daemon (FastAPI)
 ```
 
 On play/sync the daemon pulls **owned** Spotify playlists, then embeds pending tracks (Deezer preview → MuQ → sqlite-vec). Playback is a **virtual queue** on Spotify Connect (multi-URI blocks + 1s monitor).
@@ -79,7 +86,7 @@ Env `SPOTIFY_CLIENT_ID` still overrides the config file if set.
 
 ```text
 claude_dj/
-  cli.py              # argparse entry
+  cli.py              # argparse entry (PATH: dj)
   config.py           # paths + client id
   daemon/             # FastAPI control plane
   session/            # plan + Session mint/reconcile
@@ -98,5 +105,5 @@ git clone https://github.com/AdamPSU/claude-dj-plugin
 cd claude-dj-plugin
 uv sync
 uv run pytest
-uv run claude-dj setup --client-id <id>
+uv run dj setup --client-id <id>
 ```

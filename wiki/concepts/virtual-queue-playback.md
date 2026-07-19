@@ -47,7 +47,7 @@ Always keep **two blocks** loaded when possible: cold play mints two; when the c
 
 ## Device targeting
 
-Preferred id from `~/.claude-dj/device.json` if set; else Spotify active device. Set during `claude-dj setup` or `claude-dj device`.[^1]
+Preferred id from `~/.claude-dj/device.json` if set; else Spotify active device. Set during `dj setup` or `dj device`.[^1]
 
 ## Related
 
