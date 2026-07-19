@@ -81,19 +81,17 @@ def test_kill_when_daemon_down(capsys) -> None:
     assert json.loads(capsys.readouterr().out) == {"ok": True}
 
 
-def test_statusline_toggle_on_tty(capsys, monkeypatch) -> None:
-    monkeypatch.setattr(cli.sys.stdin, "isatty", lambda: True)
+def test_statusline_toggle_subcommand(capsys) -> None:
     with patch(
         "claude_dj.integrate.statusline.toggle",
         return_value={"ok": True, "action": "installed", "enabled": True},
     ) as toggle:
-        cli.main(["statusline"])
+        cli.main(["statusline", "toggle"])
     toggle.assert_called_once_with()
     assert json.loads(capsys.readouterr().out)["enabled"] is True
 
 
-def test_statusline_render_when_piped(capsys, monkeypatch) -> None:
-    monkeypatch.setattr(cli.sys.stdin, "isatty", lambda: False)
+def test_statusline_bare_renders(capsys) -> None:
     with patch(
         "claude_dj.integrate.statusline.run",
         return_value="♪ Four Tet — Baby · 0:01/0:02",

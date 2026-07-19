@@ -272,6 +272,90 @@ def test_jam_auto_installs_statusline(monkeypatch, capsys) -> None:
     assert json.loads(capsys.readouterr().out)["ok"] is True
 
 
+def test_ensure_installed_never_saves_self_as_previous(tmp_path: Path) -> None:
+    settings = tmp_path / "settings.json"
+    marker = tmp_path / "statusline.json"
+    cmd = "/abs/dj statusline"
+    # Broken state: settings already point at us, no real previous.
+    settings.write_text(
+        json.dumps({"statusLine": {"type": "command", "command": cmd}}),
+        encoding="utf-8",
+    )
+    out = statusline.ensure_installed(
+        settings_path=settings,
+        marker_path=marker,
+        install_command=cmd,
+    )
+    assert out["action"] == "installed"
+    mark = json.loads(marker.read_text(encoding="utf-8"))
+    assert mark["previous"] is None
+
+
+def test_run_skips_self_referential_previous(monkeypatch, tmp_path: Path) -> None:
+    marker = tmp_path / "statusline.json"
+    cmd = "/abs/dj statusline"
+    marker.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "installed_command": cmd,
+                "previous": {"type": "command", "command": cmd},
+            }
+        ),
+        encoding="utf-8",
+    )
+    called: list[str] = []
+
+    def boom(command: str, stdin_data: bytes) -> str:
+        called.append(command)
+        return "should-not-run"
+
+    monkeypatch.setattr(statusline, "_run_user_command", boom)
+    monkeypatch.setattr(
+        statusline,
+        "fetch_status",
+        lambda **k: {
+            "mode": "idle",
+            "syncing": True,
+            "indexed": 1,
+            "catalog_total": 10,
+            "now_playing": None,
+        },
+    )
+    monkeypatch.setenv("NO_COLOR", "1")
+    out = statusline.run(stdin_data=b"{}", marker_path=marker)
+    assert called == []
+    assert "sync:" in out
+
+
+def test_ensure_installed_repairs_self_previous_on_noop(tmp_path: Path) -> None:
+    settings = tmp_path / "settings.json"
+    marker = tmp_path / "statusline.json"
+    cmd = "/abs/dj statusline"
+    settings.write_text(
+        json.dumps({"statusLine": {"type": "command", "command": cmd}}),
+        encoding="utf-8",
+    )
+    marker.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "installed_command": cmd,
+                "previous": {"type": "command", "command": cmd},
+            }
+        ),
+        encoding="utf-8",
+    )
+    out = statusline.ensure_installed(
+        settings_path=settings,
+        marker_path=marker,
+        install_command=cmd,
+    )
+    assert out["action"] == "noop"
+    mark = json.loads(marker.read_text(encoding="utf-8"))
+    assert mark["previous"] is None
+
+
 def test_toggle_enable_then_disable(tmp_path: Path) -> None:
     settings = tmp_path / "settings.json"
     marker = tmp_path / "statusline.json"

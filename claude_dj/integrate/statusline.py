@@ -162,6 +162,33 @@ def load_marker(path: Path | None = None) -> dict[str, Any] | None:
     return _read_json(path or STATUSLINE_MARKER)
 
 
+def is_our_command(command: str | None, *, install_command: str | None = None) -> bool:
+    """True when command is our dj statusline wrapper (avoid self-recursion)."""
+    if not isinstance(command, str) or not command.strip():
+        return False
+    cmd = command.strip()
+    ours = (install_command or resolve_install_command()).strip()
+    if cmd == ours:
+        return True
+    # Match common installs: ".../dj statusline" or "... -m claude_dj.cli statusline"
+    return cmd.endswith(" statusline") and (
+        "/dj " in f" {cmd}" or cmd.startswith("dj ") or "claude_dj.cli" in cmd
+    )
+
+
+def _safe_previous(
+    candidate: Any,
+    *,
+    install_command: str,
+) -> dict[str, Any] | None:
+    """Return a previous statusLine only if it is not our own wrapper."""
+    if not isinstance(candidate, dict):
+        return None
+    if is_our_command(candidate.get("command"), install_command=install_command):
+        return None
+    return candidate
+
+
 def is_installed(
     *,
     settings_path: Path | None = None,
@@ -192,6 +219,12 @@ def ensure_installed(
     cmd = install_command or resolve_install_command()
     try:
         if is_installed(settings_path=settings_path, marker_path=marker_path):
+            # Repair a self-referential previous left by older installs.
+            marker = load_marker(marker_path) or {}
+            fixed = _safe_previous(marker.get("previous"), install_command=cmd)
+            if marker.get("previous") != fixed:
+                marker["previous"] = fixed
+                _write_json(marker_path, marker)
             return {"ok": True, "action": "noop", "enabled": True, "command": cmd}
 
         settings = _read_json(settings_path) or {}
@@ -199,14 +232,14 @@ def ensure_installed(
         if not isinstance(current, dict):
             current = None
 
-        # Keep original previous across disable→enable cycles.
+        # Keep original previous across disable→enable cycles; never store ourselves.
         marker_existing = load_marker(marker_path) or {}
         if marker_existing.get("installed_command"):
-            previous = marker_existing.get("previous")
-            if previous is not None and not isinstance(previous, dict):
-                previous = None
+            previous = _safe_previous(
+                marker_existing.get("previous"), install_command=cmd
+            )
         else:
-            previous = current
+            previous = _safe_previous(current, install_command=cmd)
 
         marker = {
             "version": MARKER_VERSION,
@@ -242,13 +275,17 @@ def uninstall(
             return {"ok": True, "action": "noop", "enabled": False}
 
         marker = load_marker(marker_path) or {}
-        previous = marker.get("previous")
+        cmd = str(marker.get("installed_command") or resolve_install_command())
+        previous = _safe_previous(marker.get("previous"), install_command=cmd)
         settings = _read_json(settings_path) or {}
         if isinstance(previous, dict):
             settings["statusLine"] = previous
         else:
             settings.pop("statusLine", None)
         _write_json(settings_path, settings)
+        # Persist cleaned previous so re-enable does not resurrect a loop.
+        marker["previous"] = previous
+        _write_json(marker_path, marker)
         return {"ok": True, "action": "disabled", "enabled": False}
     except OSError as exc:
         return {"ok": False, "error": str(exc)}
@@ -313,7 +350,8 @@ def run(
     user_cmd = None
     if isinstance(previous, dict):
         user_cmd = previous.get("command")
-    if isinstance(user_cmd, str) and user_cmd.strip():
+    # Never recurse into our own wrapper (broken markers used to self-point).
+    if isinstance(user_cmd, str) and user_cmd.strip() and not is_our_command(user_cmd):
         user_out = _run_user_command(user_cmd, stdin_data)
         if user_out:
             lines.append(user_out)

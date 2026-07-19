@@ -19,7 +19,7 @@ Commands:
   setup                 Interactive setup (Spotify + MuQ + statusline)
   jam                   Start/resume recommender; enables statusline
   kill                  Stop daemon (jam + bar process). Spotify keeps playing
-  statusline            Toggle Claude Code status bar on/off
+  statusline toggle     Toggle Claude Code status bar on/off
   sync                  Kick catalog sync
   device [id]           List Connect devices, or prefer one
   help                  Show this help
@@ -137,19 +137,22 @@ def _cmd_setup(argv: list[str]) -> None:
 
 
 def _cmd_statusline(argv: list[str]) -> None:
-    """Toggle when run interactively; render when Claude Code invokes (piped stdin)."""
+    """Render for Claude Code, or `toggle` to enable/disable the bar."""
     from claude_dj.integrate import statusline as statusline_mod
+
+    if argv and argv[0] == "toggle":
+        if len(argv) > 1:
+            print(f"unknown statusline argument: {argv[1]}", file=sys.stderr)
+            raise SystemExit(2)
+        out = statusline_mod.toggle()
+        _emit(out)
+        return
 
     if argv:
         print(f"unknown statusline argument: {argv[0]}", file=sys.stderr)
         raise SystemExit(2)
 
-    # Claude Code pipes JSON on stdin (not a TTY). Users toggle from a real TTY.
-    if sys.stdin.isatty():
-        out = statusline_mod.toggle()
-        _emit(out)
-        return
-
+    # Claude Code invokes bare `dj statusline` with piped JSON stdin.
     rendered = statusline_mod.run()
     if rendered:
         sys.stdout.write(rendered if rendered.endswith("\n") else rendered + "\n")
