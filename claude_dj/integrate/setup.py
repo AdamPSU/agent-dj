@@ -35,8 +35,25 @@ def _confirm(message: str, *, default: bool = True) -> bool:
 
 
 def _require_tty() -> None:
+    """Ensure stdin is a real TTY (reopen /dev/tty after curl|bash)."""
+    if sys.stdin.isatty():
+        return
+    try:
+        # Piped install leaves stdin as the script stream; use the console.
+        sys.stdin = open("/dev/tty", encoding="utf-8")  # noqa: SIM115
+    except OSError:
+        print(
+            "dj setup requires an interactive terminal.\n"
+            "Run: dj setup",
+            file=sys.stderr,
+        )
+        raise SystemExit(2) from None
     if not sys.stdin.isatty():
-        print("dj setup requires an interactive terminal", file=sys.stderr)
+        print(
+            "dj setup requires an interactive terminal.\n"
+            "Run: dj setup",
+            file=sys.stderr,
+        )
         raise SystemExit(2)
 
 

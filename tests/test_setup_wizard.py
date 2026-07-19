@@ -22,10 +22,15 @@ def test_device_label() -> None:
     )
 
 
-def test_run_requires_tty(tmp_path, monkeypatch) -> None:
+def test_run_requires_tty_when_no_console(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr("claude_dj.config.APP_DIR", tmp_path)
     monkeypatch.setattr("claude_dj.config.CONFIG_PATH", tmp_path / "config.json")
     monkeypatch.setattr(setup_wizard.sys.stdin, "isatty", lambda: False)
+
+    def boom(*a, **k):
+        raise OSError("no tty")
+
+    monkeypatch.setattr("builtins.open", boom)
     with pytest.raises(SystemExit) as exc:
         setup_wizard.run(client_id="cid")
     assert exc.value.code == 2

@@ -6,9 +6,10 @@ Local Spotify DJ companion for coding sessions (Claude Code statusline + shell/`
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/AdamPSU/claude-dj-plugin/algorithm-v1/install.sh | bash
+dj setup
 ```
 
-This installs [`uv`](https://docs.astral.sh/uv/) if needed, puts **`dj`** on your PATH, and runs **setup** (TTY wizard).
+Install puts **`dj`** on your PATH (installs [`uv`](https://docs.astral.sh/uv/) if needed). Then run **`dj setup`** in your terminal (interactive: Spotify + MuQ).
 
 ### Spotify app (once)
 

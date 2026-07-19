@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# Install Claude DJ: uv tool + interactive setup.
+# Install Claude DJ: uv tool install, then print how to run setup.
+# Setup is interactive (Spotify + MuQ) and must run in a real terminal —
+# not via curl|bash stdin (that stream is the script pipe).
 set -euo pipefail
 
-# Pin ref until main ships the package (GitHub default branch is still old).
 REPO="${CLAUDE_DJ_REPO:-https://github.com/AdamPSU/claude-dj-plugin}"
 REF="${CLAUDE_DJ_REF:-algorithm-v1}"
-# uv git source must include the ref in the URL (default branch has no pyproject).
 SPEC="git+${REPO}@${REF}"
 
 info() { printf '%s\n' "$*"; }
@@ -36,21 +36,11 @@ export PATH="${HOME}/.local/bin:${PATH}"
 if ! command -v dj >/dev/null 2>&1; then
   info "dj is installed but not on PATH."
   info "Try: uv tool update-shell && exec \$SHELL"
-  info "Then re-run: dj setup"
+  info "Then run: dj setup"
   exit 0
 fi
 
-# Drop legacy binary name if a prior install left it behind.
-if command -v claude-dj >/dev/null 2>&1; then
-  info "Note: legacy 'claude-dj' may still be on PATH from an older install; use 'dj'."
-fi
-
-info "Running setup…"
-# curl|bash leaves stdin as the pipe (not a TTY). Attach setup to the
-# controlling terminal so questionary prompts work.
-if [ -r /dev/tty ] && [ -w /dev/tty ]; then
-  exec dj setup "$@" </dev/tty >/dev/tty 2>&1
-fi
-info "No controlling terminal; run setup yourself:"
+info ""
+info "Installed. Complete setup in this terminal:"
 info "  dj setup"
-exit 0
+info ""
