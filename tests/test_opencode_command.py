@@ -6,7 +6,7 @@ def test_project_dj_command_invokes_installed_cli() -> None:
 
     content = command_file.read_text(encoding="utf-8")
 
-    assert "dj status" in content
+    assert "dj help" in content
     assert "dj $ARGUMENTS" in content
     assert "uv run" not in content
     assert "project root" not in content.lower()

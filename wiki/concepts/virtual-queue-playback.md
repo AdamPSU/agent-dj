@@ -25,25 +25,25 @@ Playback treats Spotify as a **dumb speaker**. The app owns a **virtual queue** 
 | `idle` | Not DJing |
 | `attached` | Controlling; monitor ticks |
 
-Foreign track → quit daemon (not a long-lived “yielded” mode).
+Foreign track → stop daemon via monitor (not a long-lived “yielded” mode).
 
 ## Flow
 
 ```mermaid
 flowchart TD
-  Play["/play"] --> Mint["mint block A + B"]
+  Jam["/jam"] --> Mint["mint block A + B"]
   Mint --> VQ["plan + start_block URIs"]
   VQ --> Mon["monitor poll ~1s"]
   Mon --> Same{"same expected id?"}
   Same -->|yes in first block| Wait["ok"]
   Same -->|entered last block| Mint1["mint one more block"]
   Same -->|planned other| Recon["move cursor"]
-  Same -->|foreign| Quit["quit daemon"]
+  Same -->|foreign| Kill["stop daemon"]
 ```
 
 ## Buffer rule
 
-Always keep **two blocks** loaded when possible: cold play mints two; when the cursor enters the last loaded block, mint exactly one more. Pause never mints.
+Always keep **two blocks** loaded when possible: cold jam mints two; when the cursor enters the last loaded block, mint exactly one more. Pause never mints.
 
 ## Device targeting
 

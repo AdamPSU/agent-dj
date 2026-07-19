@@ -10,7 +10,7 @@ User command:
 
 Command handling:
 
-- If the command is empty (/dj ``), run `dj status`.
+- If the command is empty (/dj ``), run `dj help`.
 - Otherwise, run `dj $ARGUMENTS`.
 
 Return the command output concisely. Do not add extra explanation unless the command fails.

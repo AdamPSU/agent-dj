@@ -221,7 +221,7 @@ def get_access_token() -> str:
     """Return a valid Spotify access token, renewing it first if it has expired."""
     tokens = load_tokens()
     if tokens is None:
-        raise RuntimeError("not logged in; run: dj play")
+        raise RuntimeError("not logged in; run: dj setup")
     if time.time() >= float(tokens["expires_at"]):
         try:
             _client_id()

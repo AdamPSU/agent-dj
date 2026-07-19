@@ -18,7 +18,7 @@ Package root is **`claude_dj/`** (formerly `backend/`). Branch `algorithm-v1`. G
 
 | Layer | Path / role |
 |-------|-------------|
-| Install | `install.sh` → `uv tool install` → `claude-dj setup` |
+| Install | `install.sh` → `uv tool install` → `dj setup` |
 | CLI | `claude_dj/cli.py` — auth client, spawn daemon, HTTP |
 | Integrate | `claude_dj/integrate/` — setup wizard, statusline, `/dj` skill |
 | Daemon | `claude_dj/daemon/server.py` — FastAPI + monitor |
@@ -31,17 +31,19 @@ Package root is **`claude_dj/`** (formerly `backend/`). Branch `algorithm-v1`. G
 
 ## Commands
 
-`setup` · `play` · `status` · `sync` · `device` · `device <id>` · `quit` · `statusline`
+`setup` · `jam` · `kill` · `statusline` · `sync` · `device` · `device <id>` · `help`
 
-- **`setup`**: client ID → Spotify login → device → statusline → `/dj` skill (questionary TTY)
-- **`play`**: session + daemon + kick sync + mint pair of blocks + Connect
+- **`setup`**: client ID → Spotify login → device → statusline → `/dj` skill → MuQ
+- **`jam`**: session + daemon + kick sync + mint pair of blocks + Connect
+- **`kill`**: stop daemon (Spotify keeps playing)
+- **`statusline`**: toggle Claude Code bar
 - Client ID: env `SPOTIFY_CLIENT_ID` **or** `~/.claude-dj/config.json` (no shell export required)
 
 ## Key findings
 
 1. End-to-end path: catalog → recommend → virtual queue → Connect multi-URI blocks + 1s monitor.[^1]
-2. Cold play loads **two blocks**; when the cursor enters the last loaded block, mint **one** more (always two ahead).[^2]
-3. Spotify native queue is **not** SoT; foreign track → quit daemon.[^3]
+2. Cold jam loads **two blocks**; when the cursor enters the last loaded block, mint **one** more (always two ahead).[^2]
+3. Spotify native queue is **not** SoT; foreign track → stop daemon.[^3]
 4. Layered package `claude_dj/` with host tooling under `integrate/`.[^4]
 5. Durable state under `~/.claude-dj/` including `config.json`.[^5]
 
@@ -50,7 +52,7 @@ Package root is **`claude_dj/`** (formerly `backend/`). Branch `algorithm-v1`. G
 ```mermaid
 flowchart LR
   User --> Install["install.sh"]
-  Install --> Setup["claude-dj setup"]
+  Install --> Setup["dj setup"]
   Setup --> Config["config.json"]
   User --> CLI["claude-dj"]
   CLI --> Daemon["FastAPI :8787"]

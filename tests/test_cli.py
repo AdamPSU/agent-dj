@@ -15,14 +15,15 @@ def test_help_default_and_explicit(capsys) -> None:
     assert "jam" in capsys.readouterr().out
 
 
-def test_removed_commands(capsys) -> None:
-    for cmd in ("attach", "detach", "quit", "play", "status"):
-        try:
-            cli.main([cmd])
-            assert False, f"expected SystemExit for {cmd}"
-        except SystemExit as exc:
-            assert exc.code == 2
-        assert cmd in capsys.readouterr().err or "removed" in capsys.readouterr().err or True
+def test_unknown_command_shows_help(capsys) -> None:
+    try:
+        cli.main(["nope"])
+        assert False, "expected SystemExit"
+    except SystemExit as exc:
+        assert exc.code == 2
+    err = capsys.readouterr()
+    assert "unknown command" in err.err
+    assert "jam" in err.out
 
 
 def test_jam_ensures_login_daemon_and_statusline(capsys) -> None:

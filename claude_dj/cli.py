@@ -233,17 +233,6 @@ def main(argv: list[str] | None = None) -> None:
         _emit(body)
         return
 
-    if cmd in ("attach", "detach", "quit", "play", "status"):
-        hints = {
-            "attach": "removed; use `dj statusline` to enable the bar, `dj jam` to play",
-            "detach": "removed; use `dj kill` to stop the daemon",
-            "quit": "removed; use `dj kill` to stop the daemon",
-            "play": "removed; use `dj jam`",
-            "status": "removed; use the statusline (`dj statusline` / `dj jam`)",
-        }
-        print(f"dj {cmd} is {hints[cmd]}", file=sys.stderr)
-        raise SystemExit(2)
-
     print(f"unknown command: {cmd}", file=sys.stderr)
     _cmd_help()
     raise SystemExit(2)

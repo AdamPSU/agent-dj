@@ -22,7 +22,7 @@ _monitor_thread: threading.Thread | None = None
 
 
 def _shutdown() -> None:
-    """Stop monitor loop and uvicorn (same path as /quit)."""
+    """Stop monitor loop and uvicorn (same path as /kill)."""
     _monitor_stop.set()
     if _server is not None:
         _server.should_exit = True

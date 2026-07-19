@@ -1,6 +1,6 @@
 ---
-title: claude-dj CLI
-description: Entry point `claude_dj.cli:main` (`pyproject.toml` script `claude-dj`).
+title: dj CLI
+description: Entry point `claude_dj.cli:main` (`pyproject.toml` script `dj`).
 date: '2026-07-18'
 tags:
 - cli
@@ -8,28 +8,28 @@ tags:
 - install
 ---
 
-Entry point `claude_dj.cli:main` (`pyproject.toml` script `claude-dj`).
+Entry point `claude_dj.cli:main` (`pyproject.toml` script `dj`).
 
 ## Install
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/AdamPSU/claude-dj-plugin/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/AdamPSU/claude-dj-plugin/algorithm-v1/install.sh | bash
+dj setup
 ```
-
-`install.sh` ensures `uv`, runs `uv tool install`, then `claude-dj setup`.
 
 ## Commands
 
 | Command | Behavior |
 |---------|----------|
-| `setup` | TTY wizard (questionary): client ID → login → device → statusline → `/dj` skill |
-| `play` | statusline ensure → `ensure_session` → `ensure_daemon` → `POST /play` |
-| `status` | `GET /status` |
+| `setup` | TTY wizard: client ID → login → device → statusline → `/dj` skill → MuQ |
+| `jam` | statusline ensure → `ensure_session` → `ensure_daemon` → `POST /jam` |
+| `kill` | `POST /kill` (stop daemon; Spotify keeps playing) |
+| `statusline` | toggle Claude Code bar on/off |
+| `statusline --render` | Claude Code hook (render only; not user-facing) |
 | `sync` | `POST /sync` |
 | `device` | auth + daemon → `GET /devices` |
 | `device <id>` | auth + daemon → `POST /devices/{id}` |
-| `quit` | `POST /quit` |
-| `statusline` | render DJ statusline row (Claude Code) |
+| `help` | list commands |
 
 Hidden: `__daemon__` runs FastAPI via `claude_dj.daemon.server`.
 

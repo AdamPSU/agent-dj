@@ -25,11 +25,11 @@ def skill_is_installed(*, skill_path: Path | None = None) -> bool:
     except OSError:
         return False
     return MARKER in text and (
-        "dj status" in text
-        or "claude-dj" in text
+        "claude-dj" in text
         or "`dj`" in text
         or "dj jam" in text
-        or "dj attach" in text
+        or "dj kill" in text
+        or "dj statusline" in text
     )
 
 

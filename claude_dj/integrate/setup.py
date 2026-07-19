@@ -248,7 +248,7 @@ def run(
     console.print()
     console.print(
         f"{_m(f'bold {_TIME}', 'Done.')} "
-        f"{_m(_DIM, 'Next:')} {_m(_NOTE, 'dj play')}"
+        f"{_m(_DIM, 'Next:')} {_m(_NOTE, 'dj jam')}"
     )
     return {
         "ok": True,

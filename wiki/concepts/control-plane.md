@@ -16,22 +16,22 @@ CLI client + localhost HTTP daemon. Host tooling (setup, statusline, skill) live
 | CLI | HTTP |
 |-----|------|
 | setup | local only (config, OAuth, device, Claude Code) |
-| play | POST `/play` (+ auth + spawn) |
-| status | GET `/status` |
+| jam | POST `/jam` (+ auth + spawn + statusline enable) |
+| kill | POST `/kill` |
+| statusline | local only (toggle Claude Code bar) |
 | sync | POST `/sync` |
 | device | GET `/devices` |
 | device id | POST `/devices/{id}` |
-| quit | POST `/quit` |
 
 ```mermaid
 sequenceDiagram
   participant U as User
   participant C as CLI
   participant D as Daemon
-  U->>C: play
+  U->>C: jam
   C->>C: ensure_session
   C->>C: ensure_daemon
-  C->>D: POST /play
+  C->>D: POST /jam
   D-->>C: JSON
 ```
 

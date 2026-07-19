@@ -14,7 +14,7 @@ Catalog sync turns **owned Spotify playlists** into a local searchable catalog w
 
 ## Trigger
 
-- `POST /play` and `POST /sync` both call `catalog_sync.kick()`.[^1]
+- `POST /jam` and `POST /sync` both call `catalog_sync.kick()`.[^1]
 - `kick()` starts at most one background thread (single-flight).[^2]
 
 ## Pipeline
