@@ -3,7 +3,9 @@
 set -euo pipefail
 
 REPO_URL="${CLAUDE_DJ_REPO:-git+https://github.com/AdamPSU/claude-dj-plugin}"
-REF="${CLAUDE_DJ_REF:-}"
+# Default branch is still an old scaffold without pyproject.toml.
+# Install from algorithm-v1 until main ships the package.
+REF="${CLAUDE_DJ_REF:-algorithm-v1}"
 
 info() { printf '%s\n' "$*"; }
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
@@ -27,10 +29,7 @@ fi
 
 command -v uv >/dev/null 2>&1 || die "uv not found after install; add ~/.local/bin to PATH"
 
-spec="$REPO_URL"
-if [ -n "$REF" ]; then
-  spec="${REPO_URL}@${REF}"
-fi
+spec="${REPO_URL}@${REF}"
 
 info "Installing claude-dj (${spec})…"
 uv tool install --force "$spec"
