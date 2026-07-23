@@ -41,3 +41,29 @@ def test_set_spotify_client_id(monkeypatch, tmp_path: Path) -> None:
     config.set_spotify_client_id("  abc  ")
     data = json.loads((tmp_path / "config.json").read_text())
     assert data["spotify_client_id"] == "abc"
+
+
+def test_parse_palette_defaults() -> None:
+    assert config.parse_palette(None) == config.DEFAULT_PALETTE
+    assert config.parse_palette(["#f00"]) == (
+        "#FF0000",
+        config.DEFAULT_PALETTE[1],
+        config.DEFAULT_PALETTE[2],
+    )
+
+
+def test_set_and_load_palette(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(config, "APP_DIR", tmp_path)
+    monkeypatch.setattr(config, "CONFIG_PATH", tmp_path / "config.json")
+    out = config.set_palette(["#abc", "#ffffff", "#1ed760"])
+    assert out == ("#AABBCC", "#FFFFFF", "#1ED760")
+    assert config.load_palette() == out
+    config.clear_palette()
+    assert config.load_palette() == config.DEFAULT_PALETTE
+
+
+def test_set_palette_rejects_bad(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(config, "APP_DIR", tmp_path)
+    monkeypatch.setattr(config, "CONFIG_PATH", tmp_path / "config.json")
+    with pytest.raises(config.ConfigError):
+        config.set_palette(["nope", "#fff", "#000"])

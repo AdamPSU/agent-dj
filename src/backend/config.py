@@ -1,5 +1,6 @@
 import json
 import os
+import re
 from pathlib import Path
 from typing import Any
 
@@ -20,6 +21,10 @@ SPOTIFY_SCOPES = "user-read-playback-state"
 SPOTIFY_AUTHORIZE_URL = "https://accounts.spotify.com/authorize"
 SPOTIFY_TOKEN_URL = "https://accounts.spotify.com/api/token"
 SPOTIFY_API_BASE = "https://api.spotify.com/v1"
+
+# artist, song, time
+DEFAULT_PALETTE: tuple[str, str, str] = ("#A8DBB8", "#FFFFFF", "#1ED760")
+_HEX_RE = re.compile(r"^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$")
 
 
 class ConfigError(RuntimeError):
@@ -56,3 +61,52 @@ def resolve_spotify_client_id() -> str:
     if file_id:
         return file_id
     raise ConfigError("Spotify client ID not configured; run: dj auth")
+
+
+def normalize_hex(value: str) -> str | None:
+    raw = (value or "").strip()
+    if not _HEX_RE.match(raw):
+        return None
+    body = raw[1:]
+    if len(body) == 3:
+        body = "".join(ch * 2 for ch in body)
+    return f"#{body.upper()}"
+
+
+def parse_palette(raw: Any) -> tuple[str, str, str]:
+    """Resolve artist/song/time hex triple; invalid slots fall back to defaults."""
+    defaults = list(DEFAULT_PALETTE)
+    if not isinstance(raw, (list, tuple)):
+        return (defaults[0], defaults[1], defaults[2])
+    out = list(defaults)
+    for i in range(min(3, len(raw))):
+        normalized = normalize_hex(str(raw[i]))
+        if normalized:
+            out[i] = normalized
+    return (out[0], out[1], out[2])
+
+
+def load_palette() -> tuple[str, str, str]:
+    return parse_palette(load_app_config().get("palette"))
+
+
+def set_palette(colors: list[str] | tuple[str, ...]) -> tuple[str, str, str]:
+    if len(colors) != 3:
+        raise ConfigError("palette needs exactly 3 colors: artist song time")
+    parsed: list[str] = []
+    for i, c in enumerate(colors):
+        n = normalize_hex(str(c))
+        if not n:
+            raise ConfigError(f"invalid hex color at position {i + 1}: {c!r}")
+        parsed.append(n)
+    triple = (parsed[0], parsed[1], parsed[2])
+    data = load_app_config()
+    data["palette"] = list(triple)
+    save_app_config(data)
+    return triple
+
+
+def clear_palette() -> None:
+    data = load_app_config()
+    data.pop("palette", None)
+    save_app_config(data)

@@ -4,15 +4,19 @@ HELP_TEXT = """\
 dj — Spotify statusline for Claude Code and OpenCode
 
 Commands:
-  auth    Spotify login + choose agents to enable
-  on      Enable statusline (multi-select agents)
-  off     Disable statusline (multi-select agents)
-  help    Show this help
+  auth       Spotify login + choose agents to enable
+  on         Enable statusline (multi-select agents)
+  off        Disable statusline (multi-select agents)
+  palette    Show or set artist/song/time colors
+  help       Show this help
 
 Examples:
   dj auth
   dj on
   dj off
+  dj palette
+  dj palette '#A8DBB8' '#FFFFFF' '#1ED760'
+  dj palette --reset
 """
 
 
@@ -50,6 +54,43 @@ def _cmd_tick(*, as_json: bool = False) -> None:
         sys.stdout.write(rendered if rendered.endswith("\n") else rendered + "\n")
 
 
+def _cmd_palette(rest: list[str]) -> None:
+    from backend import config
+    from backend.opencode import statusline as oc
+
+    if not rest:
+        artist, song, time_c = config.load_palette()
+        _say(f"artist {artist}")
+        _say(f"song   {song}")
+        _say(f"time   {time_c}")
+        return
+    if rest == ["--reset"] or rest == ["-r"]:
+        config.clear_palette()
+        try:
+            oc.write_runtime_config()
+        except OSError:
+            pass
+        artist, song, time_c = config.load_palette()
+        _say(f"palette reset → {artist} {song} {time_c}")
+        return
+    if len(rest) != 3:
+        print(
+            "usage: dj palette [artist song time] | dj palette --reset",
+            file=sys.stderr,
+        )
+        raise SystemExit(2)
+    try:
+        triple = config.set_palette(rest)
+    except config.ConfigError as exc:
+        print(str(exc), file=sys.stderr)
+        raise SystemExit(1) from None
+    try:
+        oc.write_runtime_config()
+    except OSError:
+        pass
+    _say(f"palette {triple[0]} {triple[1]} {triple[2]}")
+
+
 def main(argv: list[str] | None = None) -> None:
     argv = sys.argv[1:] if argv is None else argv
 
@@ -79,6 +120,9 @@ def main(argv: list[str] | None = None) -> None:
             _cmd_help()
             raise SystemExit(2)
         _cmd_off()
+        return
+    if cmd == "palette":
+        _cmd_palette(rest)
         return
     if cmd == "tick":
         as_json = False

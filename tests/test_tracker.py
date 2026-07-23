@@ -46,6 +46,23 @@ def test_format_playing_no_color() -> None:
     assert line == "♪ Four Tet — Baby · 1:42/3:10"
 
 
+def test_format_line_uses_palette() -> None:
+    line = tracker.format_line(
+        {
+            "name": "Baby",
+            "artists": "Four Tet",
+            "progress_ms": 102_000,
+            "duration_ms": 190_000,
+        },
+        color=True,
+        now=0.0,
+        palette=("#FF0000", "#00FF00", "#0000FF"),
+    )
+    assert "\033[38;2;255;0;0m" in line  # artist
+    assert "\033[38;2;0;255;0m" in line  # song
+    assert "\033[38;2;0;0;255m" in line  # time
+
+
 def test_format_empty_without_name() -> None:
     assert tracker.format_line({}, color=False) == ""
 

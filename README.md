@@ -27,7 +27,24 @@ Install puts **`dj`** on your PATH (installs [`uv`](https://docs.astral.sh/uv/) 
 dj auth     # Client ID + Spotify login + multi-select agents to enable
 dj on       # multi-select agents to enable
 dj off      # multi-select agents to disable
+dj palette  # show or set artist/song/time colors
 dj help
+```
+
+### Palette
+
+Optional colors for **artist → song → time** (hex `#RGB` or `#RRGGBB`):
+
+```sh
+dj palette                              # show current
+dj palette '#A8DBB8' '#FFFFFF' '#1ED760'
+dj palette --reset
+```
+
+Or in `~/.agent-dj/config.json`:
+
+```json
+"palette": ["#A8DBB8", "#FFFFFF", "#1ED760"]
 ```
 
 ### Statusline

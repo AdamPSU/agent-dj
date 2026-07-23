@@ -39,14 +39,19 @@ def test_discover_tui_paths_includes_project(tmp_path: Path) -> None:
 
 
 def test_write_runtime_config(tmp_path: Path, monkeypatch) -> None:
+    from backend import config as app_config
+
     runtime = tmp_path / "opencode_runtime.json"
     monkeypatch.setattr(oc, "APP_RUNTIME_PATH", runtime)
     monkeypatch.setattr(oc, "APP_DIR", tmp_path)
+    monkeypatch.setattr(app_config, "CONFIG_PATH", tmp_path / "config.json")
+    monkeypatch.setattr(app_config, "APP_DIR", tmp_path)
     path = oc.write_runtime_config(argv=["/x/dj", "tick", "--json"])
     assert path == runtime
     data = json.loads(path.read_text())
     assert data["command"] == ["/x/dj", "tick", "--json"]
     assert data["env"]["NO_COLOR"] == "1"
+    assert data["palette"] == list(app_config.DEFAULT_PALETTE)
 
 
 def test_ensure_installed_happy(tmp_path: Path, monkeypatch) -> None:

@@ -13,13 +13,9 @@ const execFileAsync = promisify(execFile)
 const REFRESH_MS = 500
 const RUNTIME_PATH = join(homedir(), ".agent-dj", "opencode_runtime.json")
 
-// Match Agent DJ ANSI palette (tracker.py).
-
 const C_NOTE = "#1DB954"
-const C_ARTIST = "#A8DBB8"
-const C_SONG = "#FFFFFF"
 const C_DIM = "#6C7086"
-const C_TIME = "#1ED760"
+const DEFAULT_PALETTE = ["#A8DBB8", "#FFFFFF", "#1ED760"] as const
 
 // Leave room for model/agent labels on the left of the prompt row.
 const WIDTH_FRACTION = 0.42
@@ -29,6 +25,7 @@ const MAX_CHIP_COLS = 64
 type RuntimeConfig = {
   command?: string[]
   env?: Record<string, string>
+  palette?: string[]
 }
 
 type TickPayload = {
@@ -202,10 +199,30 @@ async function tickPayload(): Promise<TickPayload | null> {
   }
 }
 
+function resolvePalette(runtime: RuntimeConfig): [string, string, string] {
+  const raw = runtime.palette
+  const out = [...DEFAULT_PALETTE] as [string, string, string]
+  if (!Array.isArray(raw)) return out
+  for (let i = 0; i < 3; i++) {
+    const v = String(raw[i] ?? "").trim()
+    if (/^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.test(v)) {
+      out[i] = v.length === 4
+        ? `#${v[1]}${v[1]}${v[2]}${v[2]}${v[3]}${v[3]}`
+        : v
+    }
+  }
+  return out
+}
+
 function SpotifyChip() {
   const [payload, setPayload] = createSignal<TickPayload | null>(null)
+  const [palette, setPalette] = createSignal<[string, string, string]>([
+    ...DEFAULT_PALETTE,
+  ])
   const dims = useTerminalDimensions()
   const pull = () => {
+    const runtime = loadRuntime()
+    setPalette(resolvePalette(runtime))
     void tickPayload().then(setPayload)
   }
   pull()
@@ -220,6 +237,7 @@ function SpotifyChip() {
 
   const layout = createMemo(() => layoutChip(payload(), maxCols()))
   const visible = createMemo(() => Boolean(layout()))
+  const colors = createMemo(() => palette())
 
   return (
     <box
@@ -233,19 +251,19 @@ function SpotifyChip() {
       <text fg={C_NOTE} wrapMode="none">
         {layout()?.structured ? layout()!.glyph : ""}
       </text>
-      <text fg={C_ARTIST} wrapMode="none">
+      <text fg={colors()[0]} wrapMode="none">
         {layout()?.structured ? layout()!.artists : layout()?.fallback || ""}
       </text>
       <text fg={C_DIM} wrapMode="none">
         {layout()?.structured ? layout()!.dash : ""}
       </text>
-      <text fg={C_SONG} wrapMode="none">
+      <text fg={colors()[1]} wrapMode="none">
         {layout()?.structured ? layout()!.name : ""}
       </text>
       <text fg={C_DIM} wrapMode="none">
         {layout()?.structured ? layout()!.dot : ""}
       </text>
-      <text fg={C_TIME} wrapMode="none">
+      <text fg={colors()[2]} wrapMode="none">
         {layout()?.structured ? layout()!.time : ""}
       </text>
     </box>

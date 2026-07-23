@@ -74,10 +74,14 @@ def _write_json(path: Path, data: dict[str, Any]) -> None:
 
 
 def write_runtime_config(argv: list[str] | None = None) -> Path:
+    from backend.config import load_palette
+
+    artist, song, time_c = load_palette()
     payload = {
         "version": 1,
         "command": argv or resolve_dj_argv(json_tick=True),
         "env": {"NO_COLOR": "1"},
+        "palette": [artist, song, time_c],
     }
     APP_DIR.mkdir(parents=True, exist_ok=True)
     APP_RUNTIME_PATH.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")

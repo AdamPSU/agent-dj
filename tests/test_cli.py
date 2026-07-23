@@ -63,3 +63,31 @@ def test_auth_dispatches() -> None:
     with patch("backend.auth_wizard.run") as run:
         cli.main(["auth"])
     run.assert_called_once_with()
+
+
+def test_help_lists_palette(capsys) -> None:
+    cli.main(["help"])
+    assert "palette" in capsys.readouterr().out
+
+
+def test_palette_show(capsys, monkeypatch, tmp_path) -> None:
+    from backend import config
+
+    monkeypatch.setattr(config, "APP_DIR", tmp_path)
+    monkeypatch.setattr(config, "CONFIG_PATH", tmp_path / "config.json")
+    cli.main(["palette"])
+    out = capsys.readouterr().out
+    assert "#A8DBB8" in out
+    assert "#FFFFFF" in out
+    assert "#1ED760" in out
+
+
+def test_palette_set(capsys, monkeypatch, tmp_path) -> None:
+    from backend import config
+
+    monkeypatch.setattr(config, "APP_DIR", tmp_path)
+    monkeypatch.setattr(config, "CONFIG_PATH", tmp_path / "config.json")
+    with patch("backend.opencode.statusline.write_runtime_config"):
+        cli.main(["palette", "#f00", "#0f0", "#00f"])
+    assert config.load_palette() == ("#FF0000", "#00FF00", "#0000FF")
+    assert "FF0000" in capsys.readouterr().out
