@@ -23,7 +23,7 @@ SPOTIFY_TOKEN_URL = "https://accounts.spotify.com/api/token"
 SPOTIFY_API_BASE = "https://api.spotify.com/v1"
 
 # artist, song, time
-DEFAULT_PALETTE: tuple[str, str, str] = ("#A8DBB8", "#FFFFFF", "#1ED760")
+DEFAULT_PALETTE: tuple[str, str, str] = ("#888888", "#C1C1C1", "#486E6F")
 _HEX_RE = re.compile(r"^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$")
 
 

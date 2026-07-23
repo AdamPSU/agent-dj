@@ -13,9 +13,8 @@ const execFileAsync = promisify(execFile)
 const REFRESH_MS = 500
 const RUNTIME_PATH = join(homedir(), ".agent-dj", "opencode_runtime.json")
 
-const C_NOTE = "#1DB954"
 const C_DIM = "#6C7086"
-const DEFAULT_PALETTE = ["#A8DBB8", "#FFFFFF", "#1ED760"] as const
+const DEFAULT_PALETTE = ["#888888", "#C1C1C1", "#486E6F"] as const
 
 // Leave room for model/agent labels on the left of the prompt row.
 const WIDTH_FRACTION = 0.42
@@ -49,11 +48,13 @@ type Layout = {
   structured: boolean
 }
 
-/** Terminal column width (ASCII=1, most non-ASCII≈2). */
+/** Terminal column width (ASCII=1, most non-ASCII≈2). VS15/VS16 = 0. */
 export function displayColumns(value: string): number {
   let width = 0
   for (const ch of value) {
     const cp = ch.codePointAt(0) ?? 0
+    // Variation selectors (text/emoji presentation) are zero-width.
+    if (cp >= 0xfe00 && cp <= 0xfe0f) continue
     width += cp > 0xff ? 2 : 1
   }
   return width
@@ -85,7 +86,7 @@ export function layoutChip(
   maxCols: number,
 ): Layout | null {
   if (!payload) return null
-  const glyph = payload.glyph || "♪"
+  const glyph = payload.glyph || "♪\uFE0E"
   const artists = payload.artists || ""
   const name = payload.name || ""
   const progress = payload.progress || ""
@@ -248,7 +249,7 @@ function SpotifyChip() {
       visible={visible()}
       maxWidth={maxCols()}
     >
-      <text fg={C_NOTE} wrapMode="none">
+      <text fg={colors()[2]} wrapMode="none">
         {layout()?.structured ? layout()!.glyph : ""}
       </text>
       <text fg={colors()[0]} wrapMode="none">

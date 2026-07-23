@@ -37,14 +37,14 @@ Optional colors for **artist → song → time** (hex `#RGB` or `#RRGGBB`):
 
 ```sh
 dj palette                              # show current
-dj palette '#A8DBB8' '#FFFFFF' '#1ED760'
+dj palette '#888888' '#C1C1C1' '#486E6F'
 dj palette --reset
 ```
 
 Or in `~/.agent-dj/config.json`:
 
 ```json
-"palette": ["#A8DBB8", "#FFFFFF", "#1ED760"]
+"palette": ["#888888", "#C1C1C1", "#486E6F"]
 ```
 
 ### Statusline

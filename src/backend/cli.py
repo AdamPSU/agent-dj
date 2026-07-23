@@ -15,7 +15,7 @@ Examples:
   dj on
   dj off
   dj palette
-  dj palette '#A8DBB8' '#FFFFFF' '#1ED760'
+  dj palette '#888888' '#C1C1C1' '#486E6F'
   dj palette --reset
 """
 

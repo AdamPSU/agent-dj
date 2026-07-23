@@ -77,9 +77,9 @@ def test_palette_show(capsys, monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(config, "CONFIG_PATH", tmp_path / "config.json")
     cli.main(["palette"])
     out = capsys.readouterr().out
-    assert "#A8DBB8" in out
-    assert "#FFFFFF" in out
-    assert "#1ED760" in out
+    assert "#888888" in out
+    assert "#C1C1C1" in out
+    assert "#486E6F" in out
 
 
 def test_palette_set(capsys, monkeypatch, tmp_path) -> None:

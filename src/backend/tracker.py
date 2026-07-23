@@ -14,15 +14,16 @@ POLL_S = 5.0
 STALE_S = 30.0
 
 _MUSIC_GLYPHS = ("♪", "♫", "♬", "♩")
+# Force text presentation so terminals/TUIs honor fg color (not emoji green).
+_TEXT_VS = "\uFE0E"
 
-_NOTE_HEX = "#1DB954"
 _DIM_HEX = "#6C7086"
 _RESET = "\033[0m"
 
 
 def music_glyph(*, now: float | None = None) -> str:
     t = time.time() if now is None else now
-    return _MUSIC_GLYPHS[int(t) % len(_MUSIC_GLYPHS)]
+    return _MUSIC_GLYPHS[int(t) % len(_MUSIC_GLYPHS)] + _TEXT_VS
 
 
 def _use_color() -> bool:
@@ -77,7 +78,7 @@ def format_line(
     dur = format_ms(snap.get("duration_ms") if snap.get("duration_ms") is not None else None)
     glyph = music_glyph(now=now)
     return (
-        f"{_c(_ansi_fg(_NOTE_HEX), glyph, color=color)} "
+        f"{_c(_ansi_fg(time_c), glyph, color=color)} "
         f"{_c(_ansi_fg(artist_c), artists, color=color)} "
         f"{_c(_ansi_fg(_DIM_HEX), '—', color=color)} "
         f"{_c(_ansi_fg(song_c), name, color=color)} "

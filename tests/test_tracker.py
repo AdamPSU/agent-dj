@@ -43,7 +43,7 @@ def test_format_playing_no_color() -> None:
         color=False,
         now=0.0,
     )
-    assert line == "♪ Four Tet — Baby · 1:42/3:10"
+    assert line == "♪\uFE0E Four Tet — Baby · 1:42/3:10"
 
 
 def test_format_line_uses_palette() -> None:
@@ -60,7 +60,7 @@ def test_format_line_uses_palette() -> None:
     )
     assert "\033[38;2;255;0;0m" in line  # artist
     assert "\033[38;2;0;255;0m" in line  # song
-    assert "\033[38;2;0;0;255m" in line  # time
+    assert line.count("\033[38;2;0;0;255m") >= 2  # glyph + time
 
 
 def test_format_empty_without_name() -> None:
@@ -68,9 +68,9 @@ def test_format_empty_without_name() -> None:
 
 
 def test_music_glyph_cycles() -> None:
-    assert tracker.music_glyph(now=0.0) == "♪"
-    assert tracker.music_glyph(now=1.0) == "♫"
-    assert tracker.music_glyph(now=4.0) == "♪"
+    assert tracker.music_glyph(now=0.0) == "♪\uFE0E"
+    assert tracker.music_glyph(now=1.0) == "♫\uFE0E"
+    assert tracker.music_glyph(now=4.0) == "♪\uFE0E"
 
 
 def test_display_progress_interpolates_when_playing() -> None:
@@ -260,4 +260,4 @@ def test_render_snapshot_interpolates() -> None:
     }
     # now=1004 → +4s progress; int(1004)%4==0 → ♪
     line = tracker.render_snapshot(snap, color=False, now=1004.0)
-    assert line == "♪ Four Tet — Baby · 0:04/1:00"
+    assert line == "♪\uFE0E Four Tet — Baby · 0:04/1:00"

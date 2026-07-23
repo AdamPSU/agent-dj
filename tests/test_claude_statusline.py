@@ -101,7 +101,7 @@ def test_tick_renders_tracker_line(tmp_path: Path) -> None:
         cache_path=cache,
         color=False,
     )
-    assert out == "♪ Four Tet — Baby · 0:04/1:00"
+    assert out == "♪\uFE0E Four Tet — Baby · 0:04/1:00"
 
 
 def test_tick_prepends_user_command(tmp_path: Path) -> None:
@@ -137,4 +137,4 @@ def test_tick_prepends_user_command(tmp_path: Path) -> None:
             cache_path=cache,
             color=False,
         )
-    assert out == "USER\n♪ A — T · 0:01/0:05"
+    assert out == "USER\n♪\uFE0E A — T · 0:01/0:05"
