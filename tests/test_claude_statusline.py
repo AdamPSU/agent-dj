@@ -17,7 +17,7 @@ def test_ensure_installed_writes_tick_command(tmp_path: Path) -> None:
     assert out["ok"] is True
     data = json.loads(settings.read_text())
     assert data["statusLine"]["command"] == "/usr/bin/dj tick"
-    assert data["statusLine"]["refreshInterval"] == 1
+    assert data["statusLine"]["refreshInterval"] == 0.5
     m = json.loads(marker.read_text())
     assert m["installed_command"] == "/usr/bin/dj tick"
     assert m["previous"] is None

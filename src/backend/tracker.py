@@ -16,7 +16,8 @@ STALE_S = 30.0
 _MUSIC_GLYPHS = ("♪", "♫", "♬", "♩")
 
 _NOTE = "\033[38;2;29;185;84m"
-_TITLE = "\033[38;2;168;219;184m"
+_ARTIST = "\033[38;2;168;219;184m"
+_SONG = "\033[38;2;255;255;255m"
 _DIM = "\033[38;2;108;112;134m"
 _TIME = "\033[38;2;30;215;96m"
 _RESET = "\033[0m"
@@ -62,11 +63,12 @@ def format_line(
     name = str(snap.get("name") or "").strip() or "unknown"
     prog = format_ms(snap.get("progress_ms") if snap.get("progress_ms") is not None else None)
     dur = format_ms(snap.get("duration_ms") if snap.get("duration_ms") is not None else None)
-    title = f"{artists} — {name}"
     glyph = music_glyph(now=now)
     return (
         f"{_c(_NOTE, glyph, color=color)} "
-        f"{_c(_TITLE, title, color=color)} "
+        f"{_c(_ARTIST, artists, color=color)} "
+        f"{_c(_DIM, '—', color=color)} "
+        f"{_c(_SONG, name, color=color)} "
         f"{_c(_DIM, '·', color=color)} "
         f"{_c(_TIME, f'{prog}/{dur}', color=color)}"
     )
@@ -186,3 +188,35 @@ def render_snapshot(
     display = dict(snap)
     display["progress_ms"] = display_progress(snap, now=t)
     return format_line(display, color=color, now=t)
+
+
+def snapshot_payload(
+    snap: dict[str, Any] | None,
+    *,
+    now: float | None = None,
+) -> dict[str, Any] | None:
+    """Structured now-playing for TUI plugins (OpenCode cannot render ANSI)."""
+    if not snap:
+        return None
+    if not (snap.get("spotify_id") or snap.get("name")):
+        return None
+    t = time.time() if now is None else now
+    progress_ms = display_progress(snap, now=t)
+    artists = str(snap.get("artists") or "").strip() or "unknown"
+    name = str(snap.get("name") or "").strip() or "unknown"
+    return {
+        "glyph": music_glyph(now=t),
+        "artists": artists,
+        "name": name,
+        "title": f"{artists} — {name}",
+        "progress": format_ms(progress_ms),
+        "duration": format_ms(
+            snap.get("duration_ms") if snap.get("duration_ms") is not None else None
+        ),
+        "is_playing": bool(snap.get("is_playing")),
+        "line": format_line(
+            {**snap, "progress_ms": progress_ms},
+            color=False,
+            now=t,
+        ),
+    }

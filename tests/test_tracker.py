@@ -12,6 +12,26 @@ def test_format_ms() -> None:
     assert tracker.format_ms(None) == "--:--"
 
 
+def test_snapshot_payload() -> None:
+    from backend import tracker
+
+    snap = {
+        "fetched_at": 1000.0,
+        "spotify_id": "x",
+        "name": "Baby",
+        "artists": "Four Tet",
+        "progress_ms": 0,
+        "duration_ms": 190_000,
+        "is_playing": True,
+    }
+    out = tracker.snapshot_payload(snap, now=1000.0)
+    assert out is not None
+    assert out["title"] == "Four Tet — Baby"
+    assert out["progress"] == "0:00"
+    assert out["duration"] == "3:10"
+    assert "♪" in out["line"] or "♫" in out["line"] or "♬" in out["line"] or "♩" in out["line"]
+
+
 def test_format_playing_no_color() -> None:
     line = tracker.format_line(
         {

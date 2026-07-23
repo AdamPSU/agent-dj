@@ -19,14 +19,10 @@ MARKER_VERSION = 1
 
 
 def resolve_install_command() -> str:
-    exe = Path(sys.executable).resolve()
-    sibling = exe.parent / "dj"
-    if sibling.is_file() and os.access(sibling, os.X_OK):
-        return f"{sibling} tick"
-    which = shutil.which("dj")
-    if which:
-        return f"{Path(which).resolve()} tick"
-    return f"{exe} -m backend.cli tick"
+    from backend.opencode.statusline import resolve_dj_argv
+
+    # Claude Code wants the human-readable ANSI line, never --json.
+    return " ".join(resolve_dj_argv(json_tick=False))
 
 
 def _read_json(path: Path) -> dict[str, Any] | None:
@@ -138,7 +134,7 @@ def ensure_installed(
         new_sl: dict[str, Any] = {
             "type": "command",
             "command": cmd,
-            "refreshInterval": 1,
+            "refreshInterval": 0.5,
         }
         if isinstance(previous, dict) and "padding" in previous:
             new_sl["padding"] = previous["padding"]
@@ -195,6 +191,25 @@ def _run_user_command(command: str, stdin_data: bytes) -> str:
     return out.rstrip("\n")
 
 
+def _read_stdin_nonblocking() -> bytes:
+    """Read piped stdin without hanging when the pipe stays open (e.g. node execFile)."""
+    if sys.stdin.isatty():
+        return b""
+    try:
+        import select
+
+        # Only consume data already available; never block the statusline hook.
+        ready, _, _ = select.select([sys.stdin], [], [], 0)
+        if not ready:
+            return b""
+        return sys.stdin.buffer.read() or b""
+    except (OSError, ValueError):
+        try:
+            return sys.stdin.buffer.read() if not sys.stdin.isatty() else b""
+        except OSError:
+            return b""
+
+
 def tick(
     *,
     stdin_data: bytes | None = None,
@@ -204,9 +219,13 @@ def tick(
     fetch=None,
     cache_path: Path | None = None,
     color: bool | None = None,
+    as_json: bool | None = None,
 ) -> str:
     if stdin_data is None:
-        stdin_data = sys.stdin.buffer.read() if not sys.stdin.isatty() else b""
+        stdin_data = _read_stdin_nonblocking()
+
+    if as_json is None:
+        as_json = os.environ.get("DJ_TICK_FORMAT", "").strip().lower() == "json"
 
     lines: list[str] = []
     marker = load_marker(marker_path)
@@ -214,12 +233,26 @@ def tick(
     user_cmd = None
     if isinstance(previous, dict):
         user_cmd = previous.get("command")
-    if isinstance(user_cmd, str) and user_cmd.strip() and not is_our_command(user_cmd):
+    # JSON mode is for OpenCode only — never prepend Claude user statuslines.
+    if (
+        not as_json
+        and isinstance(user_cmd, str)
+        and user_cmd.strip()
+        and not is_our_command(user_cmd)
+    ):
         user_out = _run_user_command(user_cmd, stdin_data)
         if user_out:
             lines.append(user_out)
 
     snap = tracker.resolve_snapshot(now=now, fetch=fetch, cache_path=cache_path)
+
+    # OpenCode TUI cannot paint ANSI; structured JSON is rendered there.
+    if as_json:
+        payload = tracker.snapshot_payload(snap, now=now)
+        if not payload:
+            return ""
+        return json.dumps(payload, ensure_ascii=False)
+
     dj = tracker.render_snapshot(snap, color=color, now=now)
     if dj:
         lines.append(dj)

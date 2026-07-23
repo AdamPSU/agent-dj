@@ -1,12 +1,12 @@
 import sys
 
 HELP_TEXT = """\
-dj — Spotify statusline for Claude Code
+dj — Spotify statusline for Claude Code and OpenCode
 
 Commands:
-  auth    Spotify login + enable statusline
-  on      Enable statusline
-  off     Disable statusline
+  auth    Spotify login + choose agents to enable
+  on      Enable statusline (multi-select agents)
+  off     Disable statusline (multi-select agents)
   help    Show this help
 
 Examples:
@@ -25,40 +25,27 @@ def _cmd_help() -> None:
 
 
 def _cmd_auth() -> None:
-    from backend.claude import auth as auth_wizard
+    from backend import auth_wizard
 
     auth_wizard.run()
 
 
 def _cmd_on() -> None:
-    from backend.claude import statusline
+    from backend import auth_wizard
 
-    out = statusline.ensure_installed()
-    if not out.get("ok"):
-        print(out.get("error") or "failed to enable statusline", file=sys.stderr)
-        raise SystemExit(1)
-    action = out.get("action") or "enabled"
-    _say(f"statusline {action}.")
+    auth_wizard.run_on()
 
 
 def _cmd_off() -> None:
+    from backend import auth_wizard
+
+    auth_wizard.run_off()
+
+
+def _cmd_tick(*, as_json: bool = False) -> None:
     from backend.claude import statusline
 
-    out = statusline.uninstall()
-    if not out.get("ok"):
-        print(out.get("error") or "failed to disable statusline", file=sys.stderr)
-        raise SystemExit(1)
-    action = out.get("action") or "disabled"
-    if action == "noop":
-        _say("statusline already off.")
-    else:
-        _say("statusline off.")
-
-
-def _cmd_tick() -> None:
-    from backend.claude import statusline
-
-    rendered = statusline.tick()
+    rendered = statusline.tick(as_json=as_json)
     if rendered:
         sys.stdout.write(rendered if rendered.endswith("\n") else rendered + "\n")
 
@@ -71,22 +58,38 @@ def main(argv: list[str] | None = None) -> None:
         return
 
     cmd, rest = argv[0], argv[1:]
-    if rest:
-        print(f"unknown command: {cmd} {' '.join(rest)}", file=sys.stderr)
-        _cmd_help()
-        raise SystemExit(2)
 
     if cmd == "auth":
+        if rest:
+            print(f"unknown command: {cmd} {' '.join(rest)}", file=sys.stderr)
+            _cmd_help()
+            raise SystemExit(2)
         _cmd_auth()
         return
     if cmd == "on":
+        if rest:
+            print(f"unknown command: {cmd} {' '.join(rest)}", file=sys.stderr)
+            _cmd_help()
+            raise SystemExit(2)
         _cmd_on()
         return
     if cmd == "off":
+        if rest:
+            print(f"unknown command: {cmd} {' '.join(rest)}", file=sys.stderr)
+            _cmd_help()
+            raise SystemExit(2)
         _cmd_off()
         return
     if cmd == "tick":
-        _cmd_tick()
+        as_json = False
+        for arg in rest:
+            if arg in ("--json", "-j"):
+                as_json = True
+            else:
+                print(f"unknown command: tick {arg}", file=sys.stderr)
+                _cmd_help()
+                raise SystemExit(2)
+        _cmd_tick(as_json=as_json)
         return
 
     print(f"unknown command: {cmd}", file=sys.stderr)
