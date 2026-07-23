@@ -1,46 +1,43 @@
+import json
+from pathlib import Path
+
 import pytest
 
-from claude_dj import config
+from backend import config
 
 
-def test_resolve_client_id_prefers_env(tmp_path, monkeypatch) -> None:
-    monkeypatch.setattr(config, "APP_DIR", tmp_path)
+def test_resolve_client_id_from_env(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setattr(config, "CONFIG_PATH", tmp_path / "config.json")
-    config.save_app_config({"spotify_client_id": "from-file"})
-    monkeypatch.setenv("SPOTIFY_CLIENT_ID", "from-env")
-    assert config.resolve_spotify_client_id() == "from-env"
+    monkeypatch.setenv("SPOTIFY_CLIENT_ID", "env-id")
+    assert config.resolve_spotify_client_id() == "env-id"
 
 
-def test_resolve_client_id_uses_config_file(tmp_path, monkeypatch) -> None:
-    monkeypatch.setattr(config, "APP_DIR", tmp_path)
-    monkeypatch.setattr(config, "CONFIG_PATH", tmp_path / "config.json")
+def test_resolve_client_id_from_file(monkeypatch, tmp_path: Path) -> None:
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps({"spotify_client_id": "file-id"}))
+    monkeypatch.setattr(config, "CONFIG_PATH", path)
     monkeypatch.delenv("SPOTIFY_CLIENT_ID", raising=False)
-    config.save_app_config({"spotify_client_id": "from-file"})
-    assert config.resolve_spotify_client_id() == "from-file"
+    assert config.resolve_spotify_client_id() == "file-id"
 
 
-def test_resolve_client_id_missing_raises(tmp_path, monkeypatch) -> None:
-    monkeypatch.setattr(config, "APP_DIR", tmp_path)
-    monkeypatch.setattr(config, "CONFIG_PATH", tmp_path / "config.json")
+def test_resolve_client_id_missing_raises(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(config, "CONFIG_PATH", tmp_path / "missing.json")
     monkeypatch.delenv("SPOTIFY_CLIENT_ID", raising=False)
-    with pytest.raises(config.ConfigError, match="dj setup"):
+    with pytest.raises(config.ConfigError):
         config.resolve_spotify_client_id()
 
 
-def test_save_and_load_app_config(tmp_path, monkeypatch) -> None:
-    monkeypatch.setattr(config, "APP_DIR", tmp_path)
-    monkeypatch.setattr(config, "CONFIG_PATH", tmp_path / "config.json")
-    config.save_app_config({"spotify_client_id": "abc123"})
-    assert config.load_app_config() == {"spotify_client_id": "abc123"}
-    mode = (tmp_path / "config.json").stat().st_mode & 0o777
-    assert mode == 0o600
+def test_scopes_playback_state_only() -> None:
+    assert config.SPOTIFY_SCOPES == "user-read-playback-state"
 
 
-def test_set_spotify_client_id_merges(tmp_path, monkeypatch) -> None:
+def test_now_playing_path_under_app_dir() -> None:
+    assert config.NOW_PLAYING_PATH == config.APP_DIR / "now_playing.json"
+
+
+def test_set_spotify_client_id(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setattr(config, "APP_DIR", tmp_path)
     monkeypatch.setattr(config, "CONFIG_PATH", tmp_path / "config.json")
-    config.save_app_config({"other": 1})
-    config.set_spotify_client_id("new-id")
-    data = config.load_app_config()
-    assert data["spotify_client_id"] == "new-id"
-    assert data["other"] == 1
+    config.set_spotify_client_id("  abc  ")
+    data = json.loads((tmp_path / "config.json").read_text())
+    assert data["spotify_client_id"] == "abc"

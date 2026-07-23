@@ -1,63 +1,47 @@
 # Claude DJ
 
-Local Spotify DJ companion for coding sessions (Claude Code statusline + shell/`!` command mode).
+Spotify now-playing statusline for [Claude Code](https://claude.ai/code).
 
 ## Install
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/AdamPSU/claude-dj-plugin/algorithm-v1/install.sh | bash
-dj setup
+curl -fsSL https://raw.githubusercontent.com/AdamPSU/claude-dj-plugin/main/install.sh | bash
+dj auth
 ```
 
-Install puts **`dj`** on your PATH (installs [`uv`](https://docs.astral.sh/uv/) if needed). Then run **`dj setup`** in your terminal (interactive: Spotify + MuQ).
+Install puts **`dj`** on your PATH (installs [`uv`](https://docs.astral.sh/uv/) if needed). Then run **`dj auth`** in your terminal.
 
 ### Spotify app (once)
 
 1. Create an app in the [Spotify Developer Dashboard](https://developer.spotify.com/dashboard).
-2. Add a loopback redirect (`http://127.0.0.1/callback` style — login uses an ephemeral local port).
-3. Paste the **Client ID** when setup asks (saved to `~/.claude-dj/config.json`). No shell `export` required.
-
-Optional flags (still interactive — confirms Spotify + MuQ):
-
-```sh
-dj setup --client-id <id> --device-id <connect-id>
-```
+2. Add a loopback redirect (`http://127.0.0.1/callback` — login uses an ephemeral local port).
+3. Paste the **Client ID** when auth asks (saved to `~/.claude-dj/config.json`).
 
 ## Use
 
 ```sh
-dj jam               # start/resume recommender; enables statusline
-dj kill              # stop daemon + disable statusline. Spotify keeps playing
-dj sync
-dj device            # list Connect devices
-dj setup             # re-run wizard (idempotent; pick preferred device here)
+dj auth     # Client ID + Spotify login + enable statusline
+dj on       # enable statusline
+dj off      # disable statusline (restores previous Claude Code bar)
 dj help
 ```
 
-In **Claude Code**, prefer shell/command mode for zero model lag:
+`dj auth` turns the statusline **on** automatically. Use `dj off` / `dj on` to toggle later.
+
+In Claude Code shell mode:
 
 ```text
-!dj jam
-!dj kill
+!dj on
+!dj off
 ```
-
-(Optional skill still installs as `/dj` → same CLI.)
 
 ### Statusline
 
-`dj jam` (and setup) enable the bar; `dj kill` disables it (restores your previous Claude Code `statusLine`). While the daemon is up, any Spotify now-playing and/or catalog sync work shows:
+While enabled, Claude Code runs `dj tick` about once per second. Spotify is polled at most every **5 seconds**; progress is interpolated while playing and frozen while paused:
 
 ```text
-♪ Four Tet — Baby · 1:42/3:10 · sync: 128/900 songs
+♪ Four Tet — Baby · 1:42/3:10
 ```
-
-## How it works
-
-```text
-dj …  →  localhost HTTP  →  daemon (FastAPI)
-```
-
-On jam/sync the daemon pulls **owned** Spotify playlists, then embeds pending tracks (Deezer preview → MuQ → sqlite-vec). Recommender playback is a **virtual queue** on Spotify Connect (multi-URI blocks + 1s monitor).
 
 ## Local storage
 
@@ -67,34 +51,25 @@ Under `~/.claude-dj/`:
 |------|---------|
 | `config.json` | Spotify client ID (mode 600) |
 | `spotify_tokens.json` | OAuth tokens (mode 600) |
-| `device.json` | Preferred Connect device |
-| `catalog.db` | Playlists, tracks, embeddings |
+| `now_playing.json` | Short-lived now-playing cache |
 | `statusline.json` | Statusline install marker |
-| `daemon.log` | Background daemon log |
 
-Env `SPOTIFY_CLIENT_ID` still overrides the config file if set.
-
-## Local embeddings (MuQ-MuLan)
-
-- **Disk:** ~2.7 GB model download on first use (Hugging Face)
-- **RAM:** ~4–8 GB free recommended
-- **Device:** CUDA → MPS → CPU
+Env `SPOTIFY_CLIENT_ID` overrides the config file if set.
 
 ## Package layout
 
 ```text
-claude_dj/
-  cli.py              # argparse entry (PATH: dj)
-  config.py           # paths + client id
-  daemon/             # FastAPI control plane
-  session/            # plan + Session mint/reconcile
-  catalog/            # sqlite + sync
-  recommend/          # Focus/Taste blocks
-  playback/           # PlaybackPort + Spotify/Fake
-  embeddings/         # MuQ-MuLan
-  adapters/           # spotify, deezer
-  integrate/          # setup wizard, statusline, /dj skill
+src/backend/
+  cli.py           # dj entry
+  config.py
+  spotify.py       # auth + now playing
+  tracker.py       # format + 5s poll/interpolate
+  claude/          # Claude Code integration only
+    statusline.py
+    auth.py
 ```
+
+Future agent integrations (e.g. OpenCode) go under `src/backend/<agent>/`.
 
 ## Development
 
@@ -103,5 +78,5 @@ git clone https://github.com/AdamPSU/claude-dj-plugin
 cd claude-dj-plugin
 uv sync
 uv run pytest
-uv run dj setup --client-id <id>
+uv run dj auth
 ```
