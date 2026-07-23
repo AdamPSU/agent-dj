@@ -7,22 +7,7 @@ resolution-markers = [
 ]
 
 [[package]]
-name = "beaupy"
-version = "3.12.0"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "emoji" },
-    { name = "python-yakh" },
-    { name = "questo" },
-    { name = "rich" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/80/65/6e501a432db02adb3c974473d73360880878797fbe25405c08024fa76bce/beaupy-3.12.0.tar.gz", hash = "sha256:e0ca6d2356b611ae734c8cf97b28ed9e3bb941d3207af2426e182da836a385d6", size = 16671, upload-time = "2026-05-21T19:10:01.649Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/5f/91/645739784ac1cda4eb4dfaeb7b31aa0fe949499e517c0a9616341bb8201d/beaupy-3.12.0-py3-none-any.whl", hash = "sha256:b3c1451c81ae329f91b27688faac0ae0f7ccbefc5ee97967a888582000d477c9", size = 15007, upload-time = "2026-05-21T19:10:00.595Z" },
-]
-
-[[package]]
-name = "claude-dj"
+name = "agent-dj"
 version = "0.2.0"
 source = { editable = "." }
 dependencies = [
@@ -39,6 +24,21 @@ requires-dist = [{ name = "beaupy", specifier = ">=3.10.0" }]
 
 [package.metadata.requires-dev]
 dev = [{ name = "pytest", specifier = ">=8.4.0" }]
+
+[[package]]
+name = "beaupy"
+version = "3.12.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "emoji" },
+    { name = "python-yakh" },
+    { name = "questo" },
+    { name = "rich" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/80/65/6e501a432db02adb3c974473d73360880878797fbe25405c08024fa76bce/beaupy-3.12.0.tar.gz", hash = "sha256:e0ca6d2356b611ae734c8cf97b28ed9e3bb941d3207af2426e182da836a385d6", size = 16671, upload-time = "2026-05-21T19:10:01.649Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/5f/91/645739784ac1cda4eb4dfaeb7b31aa0fe949499e517c0a9616341bb8201d/beaupy-3.12.0-py3-none-any.whl", hash = "sha256:b3c1451c81ae329f91b27688faac0ae0f7ccbefc5ee97967a888582000d477c9", size = 15007, upload-time = "2026-05-21T19:10:00.595Z" },
+]
 
 [[package]]
 name = "colorama"

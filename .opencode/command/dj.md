@@ -1,8 +1,8 @@
 ---
-description: Run Claude DJ lifecycle commands through the installed local CLI.
+description: Run Agent DJ lifecycle commands through the installed local CLI.
 ---
 
-Run the installed Claude DJ CLI.
+Run the installed Agent DJ CLI.
 
 User command:
 

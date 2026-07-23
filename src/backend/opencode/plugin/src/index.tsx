@@ -11,9 +11,10 @@ import { promisify } from "node:util"
 
 const execFileAsync = promisify(execFile)
 const REFRESH_MS = 500
-const RUNTIME_PATH = join(homedir(), ".claude-dj", "opencode_runtime.json")
+const RUNTIME_PATH = join(homedir(), ".agent-dj", "opencode_runtime.json")
 
-// Match Claude DJ ANSI palette (tracker.py).
+// Match Agent DJ ANSI palette (tracker.py).
+
 const C_NOTE = "#1DB954"
 const C_ARTIST = "#A8DBB8"
 const C_SONG = "#FFFFFF"
@@ -263,6 +264,6 @@ const plugin: TuiPlugin = async (api) => {
 }
 
 export default {
-  id: "claude-dj",
+  id: "agent-dj",
   tui: plugin,
 }

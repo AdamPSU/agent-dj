@@ -1,5 +1,5 @@
 {
-  "name": "claude-dj-opencode",
+  "name": "agent-dj-opencode",
   "version": "0.1.0",
   "private": true,
   "description": "Spotify now-playing chip for OpenCode TUI",

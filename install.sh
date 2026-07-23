@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Install Claude DJ: uv tool install, then print how to run auth.
+# Install Agent DJ: uv tool install, then print how to run auth.
 set -euo pipefail
 
-REPO="${CLAUDE_DJ_REPO:-https://github.com/AdamPSU/claude-dj-plugin}"
-REF="${CLAUDE_DJ_REF:-main}"
+REPO="${AGENT_DJ_REPO:-https://github.com/AdamPSU/agent-dj}"
+REF="${AGENT_DJ_REF:-main}"
 SPEC="git+${REPO}@${REF}"
 
 info() { printf '%s\n' "$*"; }

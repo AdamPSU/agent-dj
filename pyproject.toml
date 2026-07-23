@@ -1,7 +1,8 @@
 [project]
-name = "claude-dj"
+name = "agent-dj"
 version = "0.2.0"
 description = "Spotify now-playing statusline for Claude Code and OpenCode."
+
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [

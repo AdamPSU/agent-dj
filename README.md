@@ -1,11 +1,11 @@
-# Claude DJ
+# Agent DJ
 
 Spotify now-playing statusline for [Claude Code](https://claude.ai/code) and [OpenCode](https://opencode.ai).
 
 ## Install
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/AdamPSU/claude-dj-plugin/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/AdamPSU/agent-dj/main/install.sh | bash
 dj auth
 ```
 
@@ -15,11 +15,11 @@ Install puts **`dj`** on your PATH (installs [`uv`](https://docs.astral.sh/uv/) 
 
 1. Create an app in the [Spotify Developer Dashboard](https://developer.spotify.com/dashboard).
 2. Add a loopback redirect (`http://127.0.0.1/callback` — login uses an ephemeral local port).
-3. Paste the **Client ID** when auth asks (saved to `~/.claude-dj/config.json`).
+3. Paste the **Client ID** when auth asks (saved to `~/.agent-dj/config.json`).
 
 ### OpenCode
 
-`dj on` / `dj auth` copies the TUI plugin to `~/.config/opencode/plugins/claude-dj`, writes `~/.claude-dj/opencode_runtime.json`, and registers the plugin in `~/.config/opencode/tui.json` (and project `.opencode/tui.json` when present). Restart OpenCode after enabling so the TUI reloads plugins.
+`dj on` / `dj auth` copies the TUI plugin to `~/.config/opencode/plugins/agent-dj`, writes `~/.agent-dj/opencode_runtime.json`, and registers the plugin in `~/.config/opencode/tui.json` (and project `.opencode/tui.json` when present). Restart OpenCode after enabling so the TUI reloads plugins.
 
 ## Use
 
@@ -40,7 +40,7 @@ Spotify is polled at most every **5 seconds**; progress is interpolated while pl
 
 ## Local storage
 
-Under `~/.claude-dj/`:
+Under `~/.agent-dj/`:
 
 | Path | Purpose |
 |------|---------|
@@ -50,7 +50,7 @@ Under `~/.claude-dj/`:
 | `statusline.json` | Claude Code statusline marker |
 | `opencode_runtime.json` | OpenCode plugin command path |
 
-OpenCode plugin: `~/.config/opencode/plugins/claude-dj`.
+OpenCode plugin: `~/.config/opencode/plugins/agent-dj`.
 
 Env `SPOTIFY_CLIENT_ID` overrides the config file if set.
 
@@ -73,8 +73,8 @@ src/backend/
 ## Development
 
 ```sh
-git clone https://github.com/AdamPSU/claude-dj-plugin
-cd claude-dj-plugin
+git clone https://github.com/AdamPSU/agent-dj
+cd agent-dj
 uv sync
 uv run pytest
 uv run dj auth
