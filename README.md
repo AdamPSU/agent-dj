@@ -1,6 +1,18 @@
 # Agent DJ
 
-Spotify now-playing statusline for [Claude Code](https://claude.ai/code) and [OpenCode](https://opencode.ai).
+Spotify now-playing in your agent statusline — [OpenCode](https://opencode.ai) and [Claude Code](https://claude.ai/code).
+
+**OpenCode**
+
+![OpenCode statusline with now playing](assets/opencode.png)
+
+**Claude Code**
+
+![Claude Code statusline with now playing](assets/claude-code.png)
+
+```text
+♪ The Strokes — The Adults Are Talking · 4:08/5:09
+```
 
 ## Install
 
@@ -9,7 +21,7 @@ curl -fsSL https://raw.githubusercontent.com/AdamPSU/agent-dj/main/install.sh | 
 dj auth
 ```
 
-Install puts **`dj`** on your PATH (installs [`uv`](https://docs.astral.sh/uv/) if needed). Then run **`dj auth`** in your terminal and multi-select agents.
+Install puts **`dj`** on your PATH (installs [`uv`](https://docs.astral.sh/uv/) if needed). Run **`dj auth`** and multi-select agents.
 
 ### Spotify app (once)
 
@@ -48,10 +60,6 @@ Or in `~/.agent-dj/config.json`:
 ```
 
 ### Statusline
-
-```text
-♪ Four Tet — Baby · 1:42/3:10
-```
 
 Spotify is polled at most every **5 seconds**; progress is interpolated while playing and frozen while paused. Claude Code runs `dj tick` ~0.5s; the OpenCode chip shells `dj tick --json` on the same cadence.
 
