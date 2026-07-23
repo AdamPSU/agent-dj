@@ -102,3 +102,7 @@ uv sync
 uv run pytest
 uv run dj auth
 ```
+
+## License
+
+[Unlicense](LICENSE) (public domain). Use it however you want.
