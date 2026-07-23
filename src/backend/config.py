@@ -5,13 +5,6 @@ from pathlib import Path
 from typing import Any
 
 APP_DIR = Path.home() / ".agent-dj"
-_LEGACY_APP_DIR = Path.home() / ".claude-dj"
-
-if not APP_DIR.exists() and _LEGACY_APP_DIR.is_dir():
-    try:
-        _LEGACY_APP_DIR.rename(APP_DIR)
-    except OSError:
-        pass
 
 SPOTIFY_TOKEN_PATH = APP_DIR / "spotify_tokens.json"
 NOW_PLAYING_PATH = APP_DIR / "now_playing.json"

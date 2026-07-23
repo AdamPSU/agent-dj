@@ -14,7 +14,6 @@ from backend.config import APP_DIR
 OPENCODE_CONFIG_DIR = Path.home() / ".config" / "opencode"
 PLUGINS_DIR = OPENCODE_CONFIG_DIR / "plugins"
 PLUGIN_NAME = "agent-dj"
-LEGACY_PLUGIN_NAMES = ("claude-dj",)
 OUR_PLUGIN_DIR = PLUGINS_DIR / PLUGIN_NAME
 APP_RUNTIME_PATH = APP_DIR / "opencode_runtime.json"
 TUI_SCHEMA = "https://opencode.ai/tui.json"
@@ -34,10 +33,6 @@ def resolve_dj_argv(*, json_tick: bool = True) -> list[str]:
     candidates.append(home / ".local" / "bin" / "dj")
     candidates.append(
         home / ".local" / "share" / "uv" / "tools" / "agent-dj" / "bin" / "dj"
-    )
-    # Pre-rename tool install path
-    candidates.append(
-        home / ".local" / "share" / "uv" / "tools" / "claude-dj" / "bin" / "dj"
     )
     candidates.append(Path(sys.executable).resolve().parent / "dj")
     tail = ["tick", "--json"] if json_tick else ["tick"]
@@ -143,19 +138,11 @@ def merge_plugins(plugins: list[Any], entries: list[str]) -> list[Any]:
 
 def remove_plugins(plugins: list[Any], entries: list[str]) -> list[Any]:
     drop = {str(e) for e in entries}
-    names = (PLUGIN_NAME, *LEGACY_PLUGIN_NAMES)
     for e in list(drop):
-        for name in names:
-            if e.endswith(f"/{name}"):
-                drop.add(e.rstrip("/") + "/src/index.tsx")
-            if e.endswith(f"/{name}/src/index.tsx"):
-                drop.add(e[: -len("/src/index.tsx")])
-    # Always drop legacy plugin dir entries when uninstalling ours.
-    for name in LEGACY_PLUGIN_NAMES:
-        for p in plugins:
-            s = str(p)
-            if f"/{name}" in s or s.endswith(name):
-                drop.add(s)
+        if e.endswith(f"/{PLUGIN_NAME}"):
+            drop.add(e.rstrip("/") + "/src/index.tsx")
+        if e.endswith(f"/{PLUGIN_NAME}/src/index.tsx"):
+            drop.add(e[: -len("/src/index.tsx")])
     return [p for p in plugins if str(p) not in drop]
 
 
@@ -207,10 +194,7 @@ def is_installed(
     if not isinstance(plugins, list):
         return False
     have = {str(p) for p in plugins}
-    if entry in have:
-        return True
-    # Treat legacy plugin name as installed until migrated.
-    return any(f"/{name}" in p or p.endswith(name) for p in have for name in LEGACY_PLUGIN_NAMES)
+    return entry in have
 
 
 def ensure_installed(
@@ -222,21 +206,10 @@ def ensure_installed(
 ) -> None:
     config_dir = config_dir or OPENCODE_CONFIG_DIR
     plugins_dir = plugins_dir or (config_dir / "plugins")
-    # Drop legacy plugin dir if present.
-    for name in LEGACY_PLUGIN_NAMES:
-        legacy = plugins_dir / name
-        if legacy.is_dir():
-            shutil.rmtree(legacy, ignore_errors=True)
     target = sync_our_plugin(dest=plugins_dir / PLUGIN_NAME, src=plugin_src)
     write_runtime_config()
     entry = plugin_entry(target)
     for path in discover_tui_paths(config_dir=config_dir, cwd=cwd):
-        # Remove legacy entries then add current.
-        data = _read_json(path) or {}
-        plugins = data.get("plugin")
-        if isinstance(plugins, list):
-            data["plugin"] = remove_plugins(plugins, [])
-            _write_json(path, data)
         _merge_entry(path, entry)
 
 

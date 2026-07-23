@@ -1,6 +1,6 @@
 /**
  * Lightweight checks for OpenCode chip truncation helpers.
- * Run: node tests/test_opencode_layout.mjs
+ * Run: node src/tests/test_opencode_layout.mjs
  */
 import assert from "node:assert/strict"
 import { pathToFileURL } from "node:url"
@@ -9,7 +9,7 @@ import { fileURLToPath } from "node:url"
 import { readFileSync, writeFileSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 
-const root = join(dirname(fileURLToPath(import.meta.url)), "..")
+const root = join(dirname(fileURLToPath(import.meta.url)), "..", "..")
 const src = join(root, "src/backend/opencode/plugin/src/index.tsx")
 
 const raw = readFileSync(src, "utf8")

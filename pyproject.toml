@@ -28,5 +28,5 @@ packages = ["src/backend"]
 "src" = ""
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
+testpaths = ["src/tests"]
 pythonpath = ["src"]

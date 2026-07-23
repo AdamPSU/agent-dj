@@ -18,11 +18,10 @@ def test_remove_plugins() -> None:
     assert oc.remove_plugins(["/a", "/b", "/a"], ["/a"]) == ["/b"]
 
 
-def test_remove_plugins_drops_legacy_tsx_entry() -> None:
+def test_remove_plugins_drops_tsx_entry() -> None:
     root = "file:///tmp/plugins/agent-dj"
-    legacy = "file:///tmp/plugins/agent-dj/src/index.tsx"
-    old = "file:///tmp/plugins/claude-dj"
-    assert oc.remove_plugins([root, legacy, old, "other"], [root]) == ["other"]
+    tsx = "file:///tmp/plugins/agent-dj/src/index.tsx"
+    assert oc.remove_plugins([root, tsx, "other"], [root]) == ["other"]
 
 
 def test_discover_tui_paths_includes_project(tmp_path: Path) -> None:
@@ -118,7 +117,6 @@ def test_ensure_installed_updates_project_tui(tmp_path: Path, monkeypatch) -> No
     proj_plugins = json.loads(project_tui.read_text())["plugin"]
     assert "@prevalentware/opencode-goal-plugin" in proj_plugins
     assert any("agent-dj" in str(p) for p in proj_plugins)
-    assert not any("claude-dj" in str(p) for p in proj_plugins)
 
 
 def test_ensure_installed_missing_bundle_raises(tmp_path: Path) -> None:
@@ -154,7 +152,6 @@ def test_uninstall_removes_our_entry(tmp_path: Path, monkeypatch) -> None:
     oc.uninstall(config_dir=config, plugins_dir=plugins, cwd=tmp_path)
     tui = json.loads((config / "tui.json").read_text())
     assert not any("agent-dj" in str(p) for p in tui.get("plugin", []))
-    assert not any("claude-dj" in str(p) for p in tui.get("plugin", []))
     assert not oc.is_installed(config_dir=config, plugins_dir=plugins)
 
 
