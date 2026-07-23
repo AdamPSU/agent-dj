@@ -2,10 +2,6 @@
 
 Show the current Spotify track in the [Claude Code](https://claude.ai/code) and [OpenCode](https://opencode.ai) statusline.
 
-```text
-♪ The Strokes — The Adults Are Talking · 4:08/5:09
-```
-
 ![Claude Code statusline with now playing](assets/claude-code.png)
 
 ## Features
