@@ -192,60 +192,74 @@ def test_resolve_fetches_and_saves(tmp_path: Path) -> None:
     assert saved["spotify_id"] == "id1"
 
 
-def test_resolve_clears_on_none(tmp_path: Path) -> None:
+def test_resolve_idle_writes_negative_cache(tmp_path: Path) -> None:
     path = tmp_path / "np.json"
-    path.write_text(json.dumps({"fetched_at": 0, "name": "old"}))
-    out = tracker.resolve_snapshot(now=100.0, fetch=lambda: None, cache_path=path)
+    path.write_text(json.dumps({"fetched_at": 0, "name": "old", "spotify_id": "x"}))
+    calls: list[int] = []
+
+    def fetch():
+        calls.append(1)
+        return None
+
+    out = tracker.resolve_snapshot(now=100.0, fetch=fetch, cache_path=path)
     assert out is None
-    assert not path.exists()
+    assert calls == [1]
+    saved = json.loads(path.read_text())
+    assert saved["fetched_at"] == 100.0
+    assert "spotify_id" not in saved
+
+    # Within POLL_S, idle must not hit Spotify again.
+    out2 = tracker.resolve_snapshot(now=104.0, fetch=fetch, cache_path=path)
+    assert out2 is None
+    assert calls == [1]
 
 
-def test_resolve_fetch_failure_keeps_fresh_cache(tmp_path: Path) -> None:
+def test_resolve_idle_repolls_after_poll_s(tmp_path: Path) -> None:
     path = tmp_path / "np.json"
-    cache = {
-        "fetched_at": 1000.0,
-        "is_playing": True,
-        "spotify_id": "x",
-        "name": "Baby",
-        "artists": "Four Tet",
-        "progress_ms": 0,
-        "duration_ms": 60_000,
-    }
-    path.write_text(json.dumps(cache))
+    path.write_text(json.dumps({"fetched_at": 1000.0}))
+    calls: list[int] = []
 
     def fetch():
-        raise RuntimeError("api down")
+        calls.append(1)
+        return None
 
     out = tracker.resolve_snapshot(
-        now=1000.0 + tracker.POLL_S + 1,
-        fetch=fetch,
-        cache_path=path,
-    )
-    assert out is not None
-    assert out["name"] == "Baby"
-
-
-def test_resolve_fetch_failure_drops_stale_cache(tmp_path: Path) -> None:
-    path = tmp_path / "np.json"
-    cache = {
-        "fetched_at": 1000.0,
-        "is_playing": True,
-        "name": "Baby",
-        "artists": "A",
-        "progress_ms": 0,
-        "duration_ms": 60_000,
-    }
-    path.write_text(json.dumps(cache))
-
-    def fetch():
-        raise RuntimeError("api down")
-
-    out = tracker.resolve_snapshot(
-        now=1000.0 + tracker.STALE_S + 1,
+        now=1000.0 + tracker.POLL_S,
         fetch=fetch,
         cache_path=path,
     )
     assert out is None
+    assert calls == [1]
+
+
+def test_resolve_fetch_error_propagates(tmp_path: Path) -> None:
+    path = tmp_path / "np.json"
+    path.write_text(
+        json.dumps(
+            {
+                "fetched_at": 1000.0,
+                "is_playing": True,
+                "spotify_id": "x",
+                "name": "Baby",
+                "artists": "Four Tet",
+                "progress_ms": 0,
+                "duration_ms": 60_000,
+            }
+        )
+    )
+
+    def fetch():
+        raise RuntimeError("api down")
+
+    try:
+        tracker.resolve_snapshot(
+            now=1000.0 + tracker.POLL_S + 1,
+            fetch=fetch,
+            cache_path=path,
+        )
+        raise AssertionError("expected RuntimeError")
+    except RuntimeError as exc:
+        assert "api down" in str(exc)
 
 
 def test_render_snapshot_interpolates() -> None:

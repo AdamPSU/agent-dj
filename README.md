@@ -105,4 +105,4 @@ uv run dj auth
 
 ## License
 
-[Unlicense](LICENSE) (public domain). Use it however you want.
+[Apache License 2.0](LICENSE)

@@ -11,7 +11,6 @@ from typing import Any, Callable
 from backend.config import NOW_PLAYING_PATH
 
 POLL_S = 5.0
-STALE_S = 30.0
 
 _MUSIC_GLYPHS = ("♪", "♫", "♬", "♩")
 # Force text presentation so terminals/TUIs honor fg color (not emoji green).
@@ -108,15 +107,6 @@ def save_cache(snap: dict[str, Any], path: Path | None = None) -> None:
         pass
 
 
-def clear_cache(path: Path | None = None) -> None:
-    p = path or NOW_PLAYING_PATH
-    if p.exists():
-        try:
-            p.unlink()
-        except OSError:
-            pass
-
-
 def needs_poll(cache: dict[str, Any] | None, *, now: float) -> bool:
     if not cache or "fetched_at" not in cache:
         return True
@@ -156,24 +146,21 @@ def resolve_snapshot(
     cache = load_cache(cache_path)
 
     if not needs_poll(cache, now=t):
-        return cache
+        if cache and (cache.get("spotify_id") or cache.get("name")):
+            return cache
+        return None
 
     if fetch is None:
         from backend import spotify
 
         fetch = spotify.get_now_playing
 
-    try:
-        row = fetch()
-    except Exception:
-        if cache is not None:
-            age = t - float(cache.get("fetched_at") or 0)
-            if age < STALE_S:
-                return cache
-        return None
+    row = fetch()
 
+    # Idle / nothing playing: still write fetched_at so POLL_S throttles.
+    # Clearing the cache here re-hit Spotify on every statusline tick (~2/s).
     if row is None:
-        clear_cache(cache_path)
+        save_cache({"fetched_at": t}, cache_path)
         return None
 
     snap = {
