@@ -95,6 +95,12 @@ def ensure_installed(
     marker_path: Path | None = None,
     install_command: str | None = None,
 ) -> dict[str, Any]:
+    """Install dj as the statusLine command, chaining any existing user command.
+
+    Claude Code only supports one statusLine command. We replace it with
+    ``dj tick``, which runs the saved previous command first and prints the
+    Spotify line underneath.
+    """
     settings_path = settings_path or CLAUDE_SETTINGS_PATH
     marker_path = marker_path or STATUSLINE_MARKER
     cmd = install_command or resolve_install_command()
@@ -105,23 +111,20 @@ def ensure_installed(
             current = None
 
         marker_existing = load_marker(marker_path) or {}
-        if marker_existing.get("installed_command"):
-            previous = _safe_previous(
-                marker_existing.get("previous"), install_command=cmd
-            )
-        else:
-            previous = _safe_previous(current, install_command=cmd)
+        saved_prev = _safe_previous(
+            marker_existing.get("previous"), install_command=cmd
+        )
+        # Live settings win when they still point at the user's command.
+        live_prev = _safe_previous(current, install_command=cmd)
+        previous = live_prev if live_prev is not None else saved_prev
 
         already = (
             isinstance(current, dict)
             and current.get("command") == cmd
             and marker_existing.get("installed_command") == cmd
+            and marker_existing.get("previous") == previous
         )
         if already:
-            fixed = _safe_previous(marker_existing.get("previous"), install_command=cmd)
-            if marker_existing.get("previous") != fixed:
-                marker_existing["previous"] = fixed
-                _write_json(marker_path, marker_existing)
             return {"ok": True, "action": "noop", "enabled": True, "command": cmd}
 
         marker = {
@@ -191,23 +194,30 @@ def _run_user_command(command: str, stdin_data: bytes) -> str:
     return out.rstrip("\n")
 
 
-def _read_stdin_nonblocking() -> bytes:
-    """Read piped stdin without hanging when the pipe stays open (e.g. node execFile)."""
+def _read_stdin(*, complete: bool) -> bytes:
+    """Read Claude/OpenCode stdin.
+
+    Claude Code sends a full JSON payload then EOF — read it completely so the
+    chained user statusline still gets model/cwd context.
+
+    OpenCode leaves the pipe open via execFile; only take bytes already available.
+    """
     if sys.stdin.isatty():
         return b""
+    if complete:
+        try:
+            return sys.stdin.buffer.read() or b""
+        except OSError:
+            return b""
     try:
         import select
 
-        # Only consume data already available; never block the statusline hook.
         ready, _, _ = select.select([sys.stdin], [], [], 0)
         if not ready:
             return b""
         return sys.stdin.buffer.read() or b""
     except (OSError, ValueError):
-        try:
-            return sys.stdin.buffer.read() if not sys.stdin.isatty() else b""
-        except OSError:
-            return b""
+        return b""
 
 
 def tick(
@@ -221,11 +231,20 @@ def tick(
     color: bool | None = None,
     as_json: bool | None = None,
 ) -> str:
-    if stdin_data is None:
-        stdin_data = _read_stdin_nonblocking()
-
     if as_json is None:
         as_json = os.environ.get("DJ_TICK_FORMAT", "").strip().lower() == "json"
+
+    if stdin_data is None:
+        # Full read for Claude (chain user cmd); nonblocking for OpenCode JSON.
+        stdin_data = _read_stdin(complete=not as_json)
+
+    # OpenCode TUI cannot paint ANSI; structured JSON is rendered there.
+    if as_json:
+        snap = tracker.resolve_snapshot(now=now, fetch=fetch, cache_path=cache_path)
+        payload = tracker.snapshot_payload(snap, now=now)
+        if not payload:
+            return ""
+        return json.dumps(payload, ensure_ascii=False)
 
     lines: list[str] = []
     marker = load_marker(marker_path)
@@ -233,10 +252,8 @@ def tick(
     user_cmd = None
     if isinstance(previous, dict):
         user_cmd = previous.get("command")
-    # JSON mode is for OpenCode only — never prepend Claude user statuslines.
     if (
-        not as_json
-        and isinstance(user_cmd, str)
+        isinstance(user_cmd, str)
         and user_cmd.strip()
         and not is_our_command(user_cmd)
     ):
@@ -245,14 +262,6 @@ def tick(
             lines.append(user_out)
 
     snap = tracker.resolve_snapshot(now=now, fetch=fetch, cache_path=cache_path)
-
-    # OpenCode TUI cannot paint ANSI; structured JSON is rendered there.
-    if as_json:
-        payload = tracker.snapshot_payload(snap, now=now)
-        if not payload:
-            return ""
-        return json.dumps(payload, ensure_ascii=False)
-
     dj = tracker.render_snapshot(snap, color=color, now=now)
     if dj:
         lines.append(dj)
