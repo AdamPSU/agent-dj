@@ -30,6 +30,26 @@ def test_save_and_load_tokens(tmp_path: Path, monkeypatch) -> None:
     loaded = spotify.load_tokens()
     assert loaded is not None
     assert loaded["access_token"] == "a"
+    # Atomic write ends with a single JSON object + newline.
+    assert (tmp_path / "tokens.json").read_text().endswith("\n")
+
+
+def test_load_tokens_repairs_trailing_junk(tmp_path: Path, monkeypatch) -> None:
+    path = tmp_path / "tokens.json"
+    monkeypatch.setattr(spotify, "SPOTIFY_TOKEN_PATH", path)
+    monkeypatch.setattr(spotify, "APP_DIR", tmp_path)
+    body = {
+        "access_token": "a",
+        "refresh_token": "r",
+        "expires_at": time.time() + 3600,
+        "scope": SPOTIFY_SCOPES,
+        "token_type": "Bearer",
+    }
+    path.write_text(json.dumps(body) + "}", encoding="utf-8")
+    loaded = spotify.load_tokens()
+    assert loaded is not None
+    assert loaded["access_token"] == "a"
+    assert json.loads(path.read_text())["access_token"] == "a"
 
 
 def test_get_access_token_refreshes_when_expired(tmp_path: Path, monkeypatch) -> None:

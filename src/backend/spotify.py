@@ -117,14 +117,26 @@ def _normalize_tokens(payload: dict) -> dict:
 
 def save_tokens(tokens: dict) -> None:
     APP_DIR.mkdir(parents=True, exist_ok=True)
-    SPOTIFY_TOKEN_PATH.write_text(json.dumps(tokens), encoding="utf-8")
-    SPOTIFY_TOKEN_PATH.chmod(0o600)
+    payload = json.dumps(tokens) + "\n"
+    tmp = SPOTIFY_TOKEN_PATH.with_suffix(SPOTIFY_TOKEN_PATH.suffix + ".tmp")
+    tmp.write_text(payload, encoding="utf-8")
+    tmp.chmod(0o600)
+    tmp.replace(SPOTIFY_TOKEN_PATH)
 
 
 def load_tokens() -> dict | None:
     if not SPOTIFY_TOKEN_PATH.exists():
         return None
-    return json.loads(SPOTIFY_TOKEN_PATH.read_text(encoding="utf-8"))
+    raw = SPOTIFY_TOKEN_PATH.read_text(encoding="utf-8")
+    if not raw.strip():
+        return None
+    data, end = json.JSONDecoder().raw_decode(raw)
+    if not isinstance(data, dict):
+        raise RuntimeError(f"invalid Spotify token file: {SPOTIFY_TOKEN_PATH}")
+    # Repair trailing junk (e.g. an extra '}') so statusline ticks don't crash.
+    if raw[end:].strip():
+        save_tokens(data)
+    return data
 
 
 def clear_tokens() -> None:
