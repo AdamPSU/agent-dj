@@ -134,10 +134,11 @@ def ensure_installed(
         }
         _write_json(marker_path, marker)
 
+        # Claude Code minimum refreshInterval is 1 second (fractional values are dropped).
         new_sl: dict[str, Any] = {
             "type": "command",
             "command": cmd,
-            "refreshInterval": 0.5,
+            "refreshInterval": 1,
         }
         if isinstance(previous, dict) and "padding" in previous:
             new_sl["padding"] = previous["padding"]
