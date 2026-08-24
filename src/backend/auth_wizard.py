@@ -9,6 +9,7 @@ from backend import config, spotify
 from backend.agents import AgentId, prompt_agents
 from backend.claude import statusline as claude_statusline
 from backend.opencode import statusline as opencode_statusline
+from backend.pi import statusline as pi_statusline
 from backend.ui import blank, confirm_step, dim, fail, header, ok, prompt_step
 
 
@@ -81,6 +82,8 @@ def currently_enabled() -> list[AgentId]:
         enabled.append("claude")
     if opencode_statusline.is_installed():
         enabled.append("opencode")
+    if pi_statusline.is_installed():
+        enabled.append("pi")
     return enabled
 
 
@@ -93,8 +96,11 @@ def enable_agents(agents: list[AgentId]) -> dict[str, Any]:
                 out = claude_statusline.ensure_installed()
                 if not isinstance(out, dict):
                     out = {"ok": True, "action": "installed"}
-            else:
+            elif agent == "opencode":
                 opencode_statusline.ensure_installed()
+                out = {"ok": True, "action": "installed"}
+            else:
+                pi_statusline.ensure_installed()
                 out = {"ok": True, "action": "installed"}
         except Exception as exc:  # noqa: BLE001 — surface to wizard UI
             out = {"ok": False, "error": str(exc)}
@@ -113,8 +119,11 @@ def disable_agents(agents: list[AgentId]) -> dict[str, Any]:
                 out = claude_statusline.uninstall()
                 if not isinstance(out, dict):
                     out = {"ok": True, "action": "disabled"}
-            else:
+            elif agent == "opencode":
                 opencode_statusline.uninstall()
+                out = {"ok": True, "action": "disabled"}
+            else:
+                pi_statusline.uninstall()
                 out = {"ok": True, "action": "disabled"}
         except Exception as exc:  # noqa: BLE001 — surface to wizard UI
             out = {"ok": False, "error": str(exc)}
@@ -124,7 +133,7 @@ def disable_agents(agents: list[AgentId]) -> dict[str, Any]:
     return {"ok": ok_all, "agents": results}
 
 
-_LABELS = {"claude": "Claude Code", "opencode": "OpenCode"}
+_LABELS = {"claude": "Claude Code", "opencode": "OpenCode", "pi": "Pi"}
 
 
 def _report_enable(results: dict[str, Any]) -> None:

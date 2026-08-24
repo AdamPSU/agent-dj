@@ -6,9 +6,10 @@ from backend.agents import parse_agent_ids, prompt_agents
 
 
 def test_parse_agent_ids_order_and_dedupe() -> None:
-    assert parse_agent_ids(["opencode", "claude", "claude"]) == [
+    assert parse_agent_ids(["opencode", "claude", "claude", "pi"]) == [
         "opencode",
         "claude",
+        "pi",
     ]
 
 

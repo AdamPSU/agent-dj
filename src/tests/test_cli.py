@@ -10,6 +10,7 @@ def test_help_lists_on_off_auth(capsys) -> None:
     assert "on" in out
     assert "off" in out
     assert "OpenCode" in out
+    assert "Pi" in out
     assert "setup" not in out
     assert "jam" not in out
     assert "tick" not in out
@@ -91,3 +92,28 @@ def test_palette_set(capsys, monkeypatch, tmp_path) -> None:
         cli.main(["palette", "#f00", "#0f0", "#00f"])
     assert config.load_palette() == ("#FF0000", "#00FF00", "#0000FF")
     assert "FF0000" in capsys.readouterr().out
+
+
+def test_help_lists_placement(capsys) -> None:
+    cli.main(["help"])
+    assert "placement" in capsys.readouterr().out
+
+
+def test_placement_show(capsys, monkeypatch, tmp_path) -> None:
+    from backend import config
+
+    monkeypatch.setattr(config, "APP_DIR", tmp_path)
+    monkeypatch.setattr(config, "CONFIG_PATH", tmp_path / "config.json")
+    cli.main(["placement"])
+    assert "below" in capsys.readouterr().out
+
+
+def test_placement_set(capsys, monkeypatch, tmp_path) -> None:
+    from backend import config
+
+    monkeypatch.setattr(config, "APP_DIR", tmp_path)
+    monkeypatch.setattr(config, "CONFIG_PATH", tmp_path / "config.json")
+    with patch("backend.pi.statusline.write_runtime_config"):
+        cli.main(["placement", "above"])
+    assert config.load_pi_placement() == "above"
+    assert "above" in capsys.readouterr().out

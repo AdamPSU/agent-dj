@@ -180,12 +180,12 @@ def test_tick_appends_below_user_command(tmp_path: Path) -> None:
         json.dumps(
             {
                 "fetched_at": 1000.0,
-                "is_playing": False,
+                "is_playing": True,
                 "spotify_id": "x",
                 "name": "T",
                 "artists": "A",
                 "progress_ms": 1000,
-                "duration_ms": 5000,
+                "duration_ms": 60_000,
             }
         )
     )
@@ -199,7 +199,35 @@ def test_tick_appends_below_user_command(tmp_path: Path) -> None:
             color=False,
         )
     run.assert_called_once_with("echo USER", b'{"model":{"display_name":"X"}}')
-    assert out == "USER\n♪\uFE0E A — T · 0:01/0:05"
+    assert out == "USER\n♪\uFE0E A — T · 0:05/1:00"
+
+
+def test_tick_paused_message(tmp_path: Path) -> None:
+    marker = tmp_path / "marker.json"
+    marker.write_text(json.dumps({"previous": None, "installed_command": "x"}))
+    cache = tmp_path / "np.json"
+    cache.write_text(
+        json.dumps(
+            {
+                "fetched_at": 1000.0,
+                "is_playing": False,
+                "spotify_id": "x",
+                "name": "T",
+                "artists": "A",
+                "progress_ms": 17482,
+                "duration_ms": 237_117,
+            }
+        )
+    )
+    out = statusline.tick(
+        stdin_data=b"",
+        marker_path=marker,
+        now=1004.0,
+        fetch=lambda: (_ for _ in ()).throw(AssertionError("no fetch")),
+        cache_path=cache,
+        color=False,
+    )
+    assert out == "⏸\uFE0E spotify paused"
 
 
 def test_tick_user_only_when_nothing_playing(tmp_path: Path) -> None:
@@ -223,4 +251,4 @@ def test_tick_user_only_when_nothing_playing(tmp_path: Path) -> None:
             cache_path=cache,
             color=False,
         )
-    assert out == "USER"
+    assert out == "USER\n⏸\uFE0E spotify paused"

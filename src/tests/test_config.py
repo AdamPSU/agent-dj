@@ -67,3 +67,27 @@ def test_set_palette_rejects_bad(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setattr(config, "CONFIG_PATH", tmp_path / "config.json")
     with pytest.raises(config.ConfigError):
         config.set_palette(["nope", "#fff", "#000"])
+
+
+def test_pi_placement_defaults_below(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(config, "APP_DIR", tmp_path)
+    monkeypatch.setattr(config, "CONFIG_PATH", tmp_path / "config.json")
+    assert config.load_pi_placement() == "below"
+    assert config.parse_pi_placement(None) == "below"
+    assert config.parse_pi_placement("nope") == "below"
+
+
+def test_set_and_load_pi_placement(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(config, "APP_DIR", tmp_path)
+    monkeypatch.setattr(config, "CONFIG_PATH", tmp_path / "config.json")
+    assert config.set_pi_placement("above") == "above"
+    assert config.load_pi_placement() == "above"
+    assert config.set_pi_placement("below") == "below"
+    assert config.load_pi_placement() == "below"
+
+
+def test_set_pi_placement_rejects_bad(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(config, "APP_DIR", tmp_path)
+    monkeypatch.setattr(config, "CONFIG_PATH", tmp_path / "config.json")
+    with pytest.raises(config.ConfigError):
+        config.set_pi_placement("sideways")

@@ -63,8 +63,28 @@ def test_currently_enabled() -> None:
             "backend.auth_wizard.opencode_statusline.is_installed",
             return_value=False,
         ),
+        patch(
+            "backend.auth_wizard.pi_statusline.is_installed",
+            return_value=True,
+        ),
     ):
-        assert auth_wizard.currently_enabled() == ["claude"]
+        assert auth_wizard.currently_enabled() == ["claude", "pi"]
+
+
+def test_enable_agents_pi_only() -> None:
+    with (
+        patch(
+            "backend.auth_wizard.pi_statusline.ensure_installed",
+        ) as pi,
+        patch(
+            "backend.auth_wizard.claude_statusline.ensure_installed",
+        ) as claude,
+    ):
+        out = auth_wizard.enable_agents(["pi"])
+    pi.assert_called_once_with()
+    claude.assert_not_called()
+    assert out["ok"] is True
+    assert out["agents"]["pi"]["ok"] is True
 
 
 def test_run_auth_selects_agents(monkeypatch) -> None:

@@ -2,7 +2,7 @@ import json
 import os
 import re
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 APP_DIR = Path.home() / ".agent-dj"
 
@@ -18,6 +18,10 @@ SPOTIFY_API_BASE = "https://api.spotify.com/v1"
 # artist, song, time
 DEFAULT_PALETTE: tuple[str, str, str] = ("#888888", "#C1C1C1", "#486E6F")
 _HEX_RE = re.compile(r"^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$")
+
+PiPlacement = Literal["above", "below"]
+DEFAULT_PI_PLACEMENT: PiPlacement = "below"
+_PI_PLACEMENTS = frozenset({"above", "below"})
 
 
 class ConfigError(RuntimeError):
@@ -103,3 +107,24 @@ def clear_palette() -> None:
     data = load_app_config()
     data.pop("palette", None)
     save_app_config(data)
+
+
+def parse_pi_placement(raw: Any) -> PiPlacement:
+    v = str(raw or "").strip().lower()
+    if v in _PI_PLACEMENTS:
+        return v  # type: ignore[return-value]
+    return DEFAULT_PI_PLACEMENT
+
+
+def load_pi_placement() -> PiPlacement:
+    return parse_pi_placement(load_app_config().get("pi_placement"))
+
+
+def set_pi_placement(value: str) -> PiPlacement:
+    v = str(value or "").strip().lower()
+    if v not in _PI_PLACEMENTS:
+        raise ConfigError("placement must be above or below")
+    data = load_app_config()
+    data["pi_placement"] = v
+    save_app_config(data)
+    return v  # type: ignore[return-value]

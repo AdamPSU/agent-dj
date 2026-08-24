@@ -15,6 +15,8 @@ POLL_S = 5.0
 _MUSIC_GLYPHS = ("♪", "♫", "♬", "♩")
 # Force text presentation so terminals/TUIs honor fg color (not emoji green).
 _TEXT_VS = "\uFE0E"
+PAUSE_GLYPH = "⏸" + _TEXT_VS
+PAUSED_TEXT = "spotify paused"
 
 _DIM_HEX = "#6C7086"
 _RESET = "\033[0m"
@@ -53,6 +55,12 @@ def format_ms(ms: int | None) -> str:
     if h:
         return f"{h}:{m:02d}:{s:02d}"
     return f"{m}:{s:02d}"
+
+
+def format_paused_line(*, color: bool | None = None) -> str:
+    if color is None:
+        color = _use_color()
+    return _c(_ansi_fg(_DIM_HEX), f"{PAUSE_GLYPH} {PAUSED_TEXT}", color=color)
 
 
 def format_line(
@@ -182,8 +190,8 @@ def render_snapshot(
     color: bool | None = None,
     now: float | None = None,
 ) -> str:
-    if not snap:
-        return ""
+    if not snap or not snap.get("is_playing"):
+        return format_paused_line(color=color)
     t = time.time() if now is None else now
     display = dict(snap)
     display["progress_ms"] = display_progress(snap, now=t)
@@ -196,8 +204,17 @@ def snapshot_payload(
     now: float | None = None,
 ) -> dict[str, Any] | None:
     """Structured now-playing for TUI plugins (OpenCode cannot render ANSI)."""
-    if not snap:
-        return None
+    if not snap or not snap.get("is_playing"):
+        return {
+            "glyph": PAUSE_GLYPH,
+            "artists": "",
+            "name": PAUSED_TEXT,
+            "title": PAUSED_TEXT,
+            "progress": "",
+            "duration": "",
+            "is_playing": False,
+            "line": format_paused_line(color=False),
+        }
     if not (snap.get("spotify_id") or snap.get("name")):
         return None
     t = time.time() if now is None else now

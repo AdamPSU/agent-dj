@@ -1,13 +1,14 @@
 import sys
 
 HELP_TEXT = """\
-dj — Spotify statusline for Claude Code and OpenCode
+dj — Spotify statusline for Claude Code, OpenCode, and Pi
 
 Commands:
   auth       Spotify login + choose agents to enable
   on         Enable statusline (multi-select agents)
   off        Disable statusline (multi-select agents)
   palette    Show or set artist/song/time colors
+  placement  Show or set Pi widget placement (above|below)
   help       Show this help
 
 Examples:
@@ -17,6 +18,8 @@ Examples:
   dj palette
   dj palette '#888888' '#C1C1C1' '#486E6F'
   dj palette --reset
+  dj placement
+  dj placement below
 """
 
 
@@ -91,6 +94,28 @@ def _cmd_palette(rest: list[str]) -> None:
     _say(f"palette {triple[0]} {triple[1]} {triple[2]}")
 
 
+def _cmd_placement(rest: list[str]) -> None:
+    from backend import config
+    from backend.pi import statusline as pi
+
+    if not rest:
+        _say(config.load_pi_placement())
+        return
+    if len(rest) != 1:
+        print("usage: dj placement [above|below]", file=sys.stderr)
+        raise SystemExit(2)
+    try:
+        value = config.set_pi_placement(rest[0])
+    except config.ConfigError as exc:
+        print(str(exc), file=sys.stderr)
+        raise SystemExit(1) from None
+    try:
+        pi.write_runtime_config()
+    except OSError:
+        pass
+    _say(value)
+
+
 def main(argv: list[str] | None = None) -> None:
     argv = sys.argv[1:] if argv is None else argv
 
@@ -123,6 +148,9 @@ def main(argv: list[str] | None = None) -> None:
         return
     if cmd == "palette":
         _cmd_palette(rest)
+        return
+    if cmd == "placement":
+        _cmd_placement(rest)
         return
     if cmd == "tick":
         as_json = False

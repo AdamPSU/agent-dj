@@ -7,11 +7,12 @@ from typing import Literal
 
 from backend.ui import GREEN, answered, console
 
-AgentId = Literal["claude", "opencode"]
+AgentId = Literal["claude", "opencode", "pi"]
 
 AGENTS: tuple[tuple[AgentId, str], ...] = (
     ("claude", "Claude Code"),
     ("opencode", "OpenCode"),
+    ("pi", "Pi"),
 )
 
 _LABEL_BY_ID = {aid: label for aid, label in AGENTS}

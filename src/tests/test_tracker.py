@@ -262,6 +262,39 @@ def test_resolve_fetch_error_propagates(tmp_path: Path) -> None:
         assert "api down" in str(exc)
 
 
+def test_render_snapshot_paused_message() -> None:
+    snap = {
+        "fetched_at": 1000.0,
+        "is_playing": False,
+        "spotify_id": "x",
+        "name": "Baby",
+        "artists": "Four Tet",
+        "progress_ms": 17482,
+        "duration_ms": 237_117,
+    }
+    assert tracker.render_snapshot(snap, color=False, now=1004.0) == (
+        "⏸\uFE0E spotify paused"
+    )
+    assert tracker.render_snapshot(None, color=False) == "⏸\uFE0E spotify paused"
+
+
+def test_snapshot_payload_paused_message() -> None:
+    snap = {
+        "fetched_at": 1000.0,
+        "is_playing": False,
+        "spotify_id": "x",
+        "name": "Baby",
+        "artists": "Four Tet",
+        "progress_ms": 17482,
+        "duration_ms": 237_117,
+    }
+    out = tracker.snapshot_payload(snap, now=1004.0)
+    assert out is not None
+    assert out["is_playing"] is False
+    assert out["line"] == "⏸\uFE0E spotify paused"
+    assert out["name"] == "spotify paused"
+
+
 def test_render_snapshot_interpolates() -> None:
     snap = {
         "fetched_at": 1000.0,
